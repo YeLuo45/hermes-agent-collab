@@ -1,0 +1,15 @@
+{
+  "agent_d828c9a4cab2": {
+    "agent_id": "agent_d828c9a4cab2",
+    "name": "Dev Agent",
+    "role": "developer",
+    "description": "Development agent",
+    "status": "offline",
+    "skills": [],
+    "workspace_id": null,
+    "current_task_id": null,
+    "metadata": {},
+    "created_at": "2026-04-19T12:32:08.664318",
+    "updated_at": "2026-04-19T12:32:08.664335"
+  }
+}

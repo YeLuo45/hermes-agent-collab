@@ -1,0 +1,13 @@
+{
+  "skill_05a0bf29f5c9": {
+    "skill_id": "skill_05a0bf29f5c9",
+    "name": "Python Dev",
+    "category": "development",
+    "description": "Python development skill",
+    "enabled": true,
+    "version": "1.0.0",
+    "config": {},
+    "created_at": "2026-04-19T12:32:33.357487",
+    "updated_at": "2026-04-19T12:32:33.357505"
+  }
+}
