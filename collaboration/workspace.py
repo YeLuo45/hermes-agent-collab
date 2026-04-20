@@ -4,6 +4,8 @@ Provides WorkspaceManager for CRUD operations on workspaces, including
 listing, creating, switching, and deleting workspaces at the ~/.hermes/workspaces/ directory.
 """
 
+from __future__ import annotations
+
 import logging
 import shutil
 from pathlib import Path
@@ -130,6 +132,26 @@ class WorkspaceManager:
             payload={"workspace_id": workspace_id},
         ))
         return True
+
+    # ─── CLI compatibility aliases ───────────────────────────────────────────
+
+    def list_workspaces(self, owner_id: str = None, is_active: bool = True) -> list[Workspace]:
+        """List workspaces (CLI compatibility)."""
+        # Note: Workspace model doesn't have owner_id/is_active fields,
+        # so we just return all workspaces
+        return self.list()
+
+    def create_workspace(self, name: str, owner_id: str, description: str = "") -> Workspace:
+        """Create workspace (CLI compatibility)."""
+        return self.create(name=name, description=description)
+
+    def get_workspace(self, workspace_id: str) -> Workspace | None:
+        """Get workspace (CLI compatibility)."""
+        return self.get(workspace_id)
+
+    def delete_workspace(self, workspace_id: str, force: bool = False) -> bool:
+        """Delete workspace (CLI compatibility)."""
+        return self.delete(workspace_id)
 
     def switch_to(self, workspace_id: str) -> Workspace:
         """Switch the current workspace."""

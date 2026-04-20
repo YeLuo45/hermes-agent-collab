@@ -88,8 +88,8 @@ class RuntimeMonitor:
         # Monitor task
         self._monitor_task: Optional[asyncio.Task] = None
         
-        # Store for persistence
-        self.store = JSONFileStore(self.base_path / "monitor")
+        # Store for persistence (events are dicts)
+        self.store = JsonFileStore(self.base_path / "monitor", dict)
         
         # Load persisted metrics
         self._load_metrics()

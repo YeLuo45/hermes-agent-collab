@@ -1,14 +1,396 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="./vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hermes Agent - 团队协作面板</title>
-    <script type="module" crossorigin src="./assets/index-CfUrXmFk.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-D1wY79yb.css">
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hermes Agent - 团队协作面板</title>
+  <style>
+    :root {
+      --bg: #0f172a; --card: #1e293b; --border: #334155;
+      --text: #f1f5f9; --muted: #94a3b8; --accent: #38bdf8;
+      --success: #22c55e; --warning: #f59e0b; --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+
+    /* Header */
+    header { display: flex; align-items: center; justify-content: space-between; padding: 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+    header h1 { font-size: 1.25rem; color: var(--accent); }
+    .ws-status { font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 9999px; background: var(--card); }
+    .ws-status.connected { color: var(--success); border: 1px solid var(--success); }
+    .ws-status.disconnected { color: var(--danger); border: 1px solid var(--danger); }
+
+    /* Workspace selector */
+    .workspace-bar { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
+    .workspace-bar select, .workspace-bar input { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 0.5rem; border-radius: 0.375rem; }
+    .workspace-bar button { background: var(--accent); color: #0f172a; border: none; padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; font-weight: 600; }
+    .workspace-bar button:hover { opacity: 0.9; }
+
+    /* Stats */
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .stat { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem; text-align: center; }
+    .stat-value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+    .stat-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; margin-top: 0.25rem; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 0.25rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); }
+    .tab { padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); font-size: 0.875rem; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-color: var(--accent); }
+
+    /* Cards */
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin-bottom: 0.75rem; }
+    .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem; }
+    .card-title { font-weight: 600; font-size: 0.9rem; }
+    .card-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; }
+    .card-body { font-size: 0.8rem; color: var(--muted); }
+
+    /* Status badges */
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 9999px; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; }
+    .badge-pending { background: #1e3a5f; color: #60a5fa; }
+    .badge-claimed { background: #3b2f1e; color: #fbbf24; }
+    .badge-in_progress { background: #1e3a2f; color: #34d399; }
+    .badge-completed { background: #14532d; color: #22c55e; }
+    .badge-failed { background: #7f1d1d; color: #f87171; }
+    .badge-blocked { background: #78350f; color: #fbbf24; }
+    .badge-idle, .badge-offline { background: #374151; color: #9ca3af; }
+    .badge-working { background: #1e40af; color: #60a5fa; }
+    .badge-blocked-agent { background: #78350f; color: #fbbf24; }
+
+    /* Agent cards */
+    .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem; }
+    .agent-card { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem; }
+    .agent-name { font-weight: 600; font-size: 0.875rem; }
+    .agent-role { font-size: 0.7rem; color: var(--muted); }
+
+    /* Skill tags */
+    .tag { display: inline-block; background: var(--border); color: var(--muted); padding: 0.1rem 0.4rem; border-radius: 0.25rem; font-size: 0.65rem; margin: 0.1rem; }
+
+    /* Create form */
+    .create-form { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
+    .create-form input, .create-form textarea, .create-form select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.5rem; border-radius: 0.375rem; margin-bottom: 0.5rem; font-family: inherit; }
+    .create-form textarea { min-height: 60px; resize: vertical; }
+    .create-form button { background: var(--accent); color: #0f172a; border: none; padding: 0.5rem 1.5rem; border-radius: 0.375rem; cursor: pointer; font-weight: 600; }
+
+    /* Empty state */
+    .empty { text-align: center; padding: 2rem; color: var(--muted); font-size: 0.875rem; }
+
+    /* Error/loading */
+    .error { background: #7f1d1d; border: 1px solid #ef4444; color: #f87171; padding: 0.75rem; border-radius: 0.5rem; margin-bottom: 1rem; font-size: 0.8rem; }
+    .loading { text-align: center; padding: 2rem; color: var(--muted); }
+
+    /* Responsive */
+    @media (max-width: 640px) {
+      .container { padding: 0.5rem; }
+      .stats { grid-template-columns: repeat(3, 1fr); }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🐝 Hermes 团队协作</h1>
+    <span id="wsStatus" class="ws-status disconnected">⚪ 未连接</span>
+  </header>
+
+  <div class="workspace-bar">
+    <select id="workspaceSelect"><option value="">加载中...</option></select>
+    <input id="newWsName" placeholder="新工作区名称" style="width:140px" />
+    <button onclick="createWorkspace()">创建工作区</button>
+    <button onclick="switchWorkspace()" style="background:#334155;color:#f1f5f9">切换</button>
+    <span style="margin-left:auto;font-size:0.75rem;color:var(--muted)">
+      API: <span id="apiUrl">--</span>
+    </span>
+  </div>
+
+  <div class="stats" id="stats">
+    <div class="stat"><div class="stat-value" id="statPending">-</div><div class="stat-label">待认领</div></div>
+    <div class="stat"><div class="stat-value" id="statClaimed">-</div><div class="stat-label">已认领</div></div>
+    <div class="stat"><div class="stat-value" id="statInProgress">-</div><div class="stat-label">进行中</div></div>
+    <div class="stat"><div class="stat-value" id="statCompleted">-</div><div class="stat-label">已完成</div></div>
+    <div class="stat"><div class="stat-value" id="statBlocked">-</div><div class="stat-label">已阻塞</div></div>
+    <div class="stat"><div class="stat-value" id="statAgents">-</div><div class="stat-label">在线Agent</div></div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="showTab('tasks')">任务</div>
+    <div class="tab" onclick="showTab('agents')">Agent</div>
+    <div class="tab" onclick="showTab('skills')">技能</div>
+    <div class="tab" onclick="showTab('create')">创建</div>
+  </div>
+
+  <div id="tabContent"></div>
+</div>
+
+<script>
+const API_BASE = '/api/collab';
+let currentWs = null;
+let wsConn = null;
+
+function apiUrl(path) { return API_BASE + path; }
+
+async function req(method, path, body) {
+  const opts = { method, headers: {'Content-Type':'application/json'} };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(apiUrl(path), opts);
+  if (!r.ok) { const err = await r.text(); throw new Error(err); }
+  return r.json();
+}
+
+async function load() {
+  try {
+    // Load workspaces
+    const wss = await req('GET', '/workspaces');
+    const sel = document.getElementById('workspaceSelect');
+    sel.innerHTML = '';
+    if (Array.isArray(wss) && wss.length) {
+      wss.forEach(ws => {
+        const opt = document.createElement('option');
+        opt.value = ws.workspace_id; opt.textContent = ws.name;
+        if (ws.workspace_id === currentWs) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      if (!currentWs) { currentWs = wss[0].workspace_id; sel.value = currentWs; }
+    } else if (!currentWs) {
+      sel.innerHTML = '<option value="">-- 无工作区 --</option>';
+    }
+    document.getElementById('apiUrl').textContent = currentWs || '未选择';
+    if (currentWs) { await loadAll(); connectWS(); }
+  } catch(e) { showError('加载失败: ' + e.message); }
+}
+
+async function loadAll() {
+  await Promise.all([loadTasks(), loadAgents(), loadSkills(), updateStats()]);
+}
+
+async function loadTasks() {
+  const tab = document.getElementById('tabContent');
+  if (!currentWs) { tab.innerHTML = '<div class="empty">请先选择工作区</div>'; return; }
+  try {
+    const tasks = await req('GET', `/tasks?workspace_id=${currentWs}`);
+    renderTasks(tasks);
+  } catch(e) { showError('加载任务失败: ' + e.message); }
+}
+
+function renderTasks(tasks) {
+  const tab = document.getElementById('tabContent');
+  if (!tasks || !tasks.length) { tab.innerHTML = '<div class="empty">暂无任务，创建一个吧</div>'; return; }
+  const html = tasks.map(t => `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${esc(t.title)}</div>
+          <div class="card-meta">ID: ${t.task_id.slice(0,8)} | 创建: ${fmt(t.created_at)}</div>
+        </div>
+        <span class="badge badge-${t.status}">${t.status}</span>
+      </div>
+      <div class="card-body">${esc(t.description || '无描述')}</div>
+      ${t.assignee ? `<div style="margin-top:0.5rem;font-size:0.7rem;color:var(--accent)">👤 ${esc(t.assignee)}</div>` : ''}
+      ${t.priority !== 'medium' ? `<div style="margin-top:0.25rem"><span class="tag">优先级: ${t.priority}</span></div>` : ''}
+      <div style="margin-top:0.75rem;display:flex;gap:0.4rem;flex-wrap:wrap">
+        ${t.status === 'pending' ? `<button class="tag" style="background:var(--warning);color:#0f172a;cursor:pointer;border:none;padding:0.2rem 0.6rem;border-radius:0.25rem;font-size:0.7rem" onclick="claimTask('${t.task_id}')">认领</button>` : ''}
+        ${t.status === 'claimed' ? `<button class="tag" style="background:var(--success);color:#0f172a;cursor:pointer;border:none;padding:0.2rem 0.6rem;border-radius:0.25rem;font-size:0.7rem" onclick="startTask('${t.task_id}')">开始</button>` : ''}
+        ${t.status === 'in_progress' ? `<button class="tag" style="background:var(--success);color:#0f172a;cursor:pointer;border:none;padding:0.2rem 0.6rem;border-radius:0.25rem;font-size:0.7rem" onclick="completeTask('${t.task_id}')">完成</button>` : ''}
+        ${t.status === 'in_progress' ? `<button class="tag" style="background:var(--danger);color:#fff;cursor:pointer;border:none;padding:0.2rem 0.6rem;border-radius:0.25rem;font-size:0.7rem" onclick="failTask('${t.task_id}')">失败</button>` : ''}
+      </div>
+    </div>`).join('');
+  tab.innerHTML = html;
+}
+
+async function loadAgents() {
+  const tab = document.getElementById('tabContent');
+  if (!currentWs) { tab.innerHTML = '<div class="empty">请先选择工作区</div>'; return; }
+  try {
+    const agents = await req('GET', `/agents?workspace_id=${currentWs}`);
+    if (!agents || !agents.length) { tab.innerHTML = '<div class="empty">暂无 Agent</div>'; return; }
+    tab.innerHTML = `<div class="agent-grid">${agents.map(a => `
+      <div class="agent-card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="agent-name">${esc(a.name)}</div>
+          <span class="badge badge-${a.status}">${a.status}</span>
+        </div>
+        <div class="agent-role">${a.role || 'unknown'}</div>
+        ${a.capabilities && a.capabilities.length ? `<div style="margin-top:0.5rem">${a.capabilities.map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
+      </div>`).join('')}</div>`;
+  } catch(e) { showError('加载Agent失败: ' + e.message); }
+}
+
+async function loadSkills() {
+  const tab = document.getElementById('tabContent');
+  if (!currentWs) { tab.innerHTML = '<div class="empty">请先选择工作区</div>'; return; }
+  try {
+    const skills = await req('GET', `/skills?workspace_id=${currentWs}`);
+    if (!skills || !skills.length) { tab.innerHTML = '<div class="empty">暂无技能</div>'; return; }
+    tab.innerHTML = skills.map(s => `
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">${esc(s.name)}</div>
+          <span class="tag">${s.category || 'other'}</span>
+        </div>
+        <div class="card-body">${esc(s.description || '无描述')}</div>
+        <div class="card-meta" style="margin-top:0.5rem">使用 ${s.usage_count || 0} 次 | v${s.version || '1.0.0'}</div>
+        ${s.tags && s.tags.length ? `<div style="margin-top:0.3rem">${s.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+      </div>`).join('');
+  } catch(e) { showError('加载技能失败: ' + e.message); }
+}
+
+async function updateStats() {
+  if (!currentWs) return;
+  try {
+    const [tasks, agents] = await Promise.all([
+      req('GET', `/tasks?workspace_id=${currentWs}`),
+      req('GET', `/agents?workspace_id=${currentWs}`)
+    ]);
+    const counts = { pending:0, claimed:0, in_progress:0, completed:0, failed:0, blocked:0 };
+    (tasks||[]).forEach(t => { const s = typeof t.status === 'string' ? t.status : 'pending'; counts[s] = (counts[s]||0)+1; });
+    const online = (agents||[]).filter(a => a.status !== 'offline').length;
+    document.getElementById('statPending').textContent = counts.pending;
+    document.getElementById('statClaimed').textContent = counts.claimed;
+    document.getElementById('statInProgress').textContent = counts.in_progress;
+    document.getElementById('statCompleted').textContent = counts.completed;
+    document.getElementById('statBlocked').textContent = counts.blocked;
+    document.getElementById('statAgents').textContent = online;
+  } catch(e) { /* silent */ }
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  if (name === 'tasks') loadTasks();
+  else if (name === 'agents') loadAgents();
+  else if (name === 'skills') loadSkills();
+  else if (name === 'create') renderCreateForm();
+}
+
+function renderCreateForm() {
+  const tab = document.getElementById('tabContent');
+  tab.innerHTML = `
+    <div class="create-form">
+      <h3 style="margin-bottom:0.75rem;font-size:0.9rem">创建新任务</h3>
+      <input id="taskTitle" placeholder="任务标题 *" />
+      <textarea id="taskDesc" placeholder="任务描述"></textarea>
+      <select id="taskPriority">
+        <option value="low">低优先级</option>
+        <option value="medium" selected>中优先级</option>
+        <option value="high">高优先级</option>
+        <option value="critical">紧急</option>
+      </select>
+      <button onclick="createTask()">创建</button>
+    </div>
+    <div class="create-form">
+      <h3 style="margin-bottom:0.75rem;font-size:0.9rem">注册 Agent</h3>
+      <input id="agentName" placeholder="Agent 名称 *" />
+      <select id="agentRole">
+        <option value="developer">开发者</option>
+        <option value="pm">项目经理</option>
+        <option value="qa">测试</option>
+        <option value="custom">自定义</option>
+      </select>
+      <input id="agentSkills" placeholder="技能（逗号分隔）" />
+      <button onclick="registerAgent()" style="background:#22c55e">注册</button>
+    </div>`;
+}
+
+async function createTask() {
+  const title = document.getElementById('taskTitle').value.trim();
+  if (!title) { alert('请输入标题'); return; }
+  try {
+    await req('POST', '/tasks', {
+      title, description: document.getElementById('taskDesc').value.trim(),
+      priority: document.getElementById('taskPriority').value,
+      workspace_id: currentWs
+    });
+    document.getElementById('taskTitle').value = '';
+    document.getElementById('taskDesc').value = '';
+    showTab('tasks'); document.querySelector('[onclick*="tasks"]').classList.add('active');
+    await updateStats();
+  } catch(e) { showError('创建任务失败: ' + e.message); }
+}
+
+async function claimTask(id) {
+  try { await req('POST', `/tasks/${id}/claim`, {agent_id: 'cli-user'}); await loadTasks(); await updateStats(); }
+  catch(e) { showError('认领失败: ' + e.message); }
+}
+async function startTask(id) {
+  try { await req('POST', `/tasks/${id}/start`, {}); await loadTasks(); await updateStats(); }
+  catch(e) { showError('开始失败: ' + e.message); }
+}
+async function completeTask(id) {
+  try { await req('POST', `/tasks/${id}/complete`, {}); await loadTasks(); await updateStats(); }
+  catch(e) { showError('完成失败: ' + e.message); }
+}
+async function failTask(id) {
+  try { await req('POST', `/tasks/${id}/fail`, {reason: '手动标记失败'}); await loadTasks(); await updateStats(); }
+  catch(e) { showError('失败: ' + e.message); }
+}
+
+async function registerAgent() {
+  const name = document.getElementById('agentName').value.trim();
+  if (!name) { alert('请输入名称'); return; }
+  try {
+    await req('POST', '/agents', {
+      name, role: document.getElementById('agentRole').value,
+      capabilities: document.getElementById('agentSkills').value.split(',').map(s => s.trim()).filter(Boolean),
+      workspace_id: currentWs
+    });
+    document.getElementById('agentName').value = '';
+    document.getElementById('agentSkills').value = '';
+    showTab('agents'); document.querySelector('[onclick*="agents"]').classList.add('active');
+    await updateStats();
+  } catch(e) { showError('注册失败: ' + e.message); }
+}
+
+async function createWorkspace() {
+  const name = document.getElementById('newWsName').value.trim();
+  if (!name) { alert('请输入名称'); return; }
+  try {
+    const ws = await req('POST', '/workspaces', {name, description: ''});
+    currentWs = ws.workspace_id;
+    document.getElementById('newWsName').value = '';
+    await load();
+  } catch(e) { showError('创建失败: ' + e.message); }
+}
+
+function switchWorkspace() {
+  currentWs = document.getElementById('workspaceSelect').value;
+  if (currentWs) { disconnectWS(); loadAll(); connectWS(); }
+}
+
+function connectWS() {
+  if (!currentWs) return;
+  disconnectWS();
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/api/collab/ws?workspace_id=${currentWs}`;
+  try {
+    wsConn = new WebSocket(url);
+    wsConn.onopen = () => {
+      document.getElementById('wsStatus').textContent = '🟢 已连接';
+      document.getElementById('wsStatus').className = 'ws-status connected';
+    };
+    wsConn.onmessage = (e) => { try { const d = JSON.parse(e.data); if (d.event && d.event.includes('task') || d.event && d.event.includes('agent')) loadAll(); } catch{} };
+    wsConn.onclose = () => {
+      document.getElementById('wsStatus').textContent = '⚪ 已断开';
+      document.getElementById('wsStatus').className = 'ws-status disconnected';
+    };
+    wsConn.onerror = () => wsConn.close();
+  } catch(e) {}
+}
+
+function disconnectWS() {
+  if (wsConn) { try { wsConn.close(); } catch{} wsConn = null; }
+}
+
+function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function fmt(iso) { if (!iso) return '-'; try { return new Date(iso).toLocaleString('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); } catch{ return iso; } }
+
+function showError(msg) {
+  const tab = document.getElementById('tabContent');
+  tab.innerHTML = `<div class="error">${esc(msg)} <button onclick="load()" style="margin-left:1rem;background:none;border:1px solid currentColor;color:inherit;padding:0.2rem 0.5rem;border-radius:0.25rem;cursor:pointer">重试</button></div>`;
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', load);
+</script>
+</body>
 </html>

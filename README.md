@@ -49,7 +49,7 @@ hermes-agent/
 cd ~/.hermes/workspace-dev/proposals/hermes-agent
 
 # 启动协作服务器（REST API + WebSocket + Web UI）
-python3 -m collaboration server --port 9119
+python3 -m collaboration server --port 9119 --host 0.0.0.0
 
 # 访问 Web UI
 open http://127.0.0.1:9119

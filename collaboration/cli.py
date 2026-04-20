@@ -16,7 +16,6 @@ try:
     from .agent_registry import AgentRegistry
     from .task_manager import TaskManager
     from .skill_system import SkillSystem
-    from .websocket_server import CollaborationServer, Message
     from .monitor import RuntimeMonitor
 except ImportError:
     from collaboration.models import AgentStatus, TaskStatus, Priority, SkillCategory
@@ -24,21 +23,19 @@ except ImportError:
     from collaboration.agent_registry import AgentRegistry
     from collaboration.task_manager import TaskManager
     from collaboration.skill_system import SkillSystem
-    from collaboration.websocket_server import CollaborationServer, Message
     from collaboration.monitor import RuntimeMonitor
 
 
 class CollaborationCLI:
     """CLI interface for team collaboration."""
     
-    def __init__(self, base_path: str = "~/.hermes/collab"):
+    def __init__(self, base_path: str = "~/.hermes"):
         self.base_path = Path(base_path).expanduser()
         self.workspace_mgr = WorkspaceManager(base_path)
         self.agent_registry = AgentRegistry(base_path)
         self.task_mgr = TaskManager(base_path)
         self.skill_system = SkillSystem(base_path)
         self.monitor = RuntimeMonitor(base_path)
-        self.ws_server: Optional[CollaborationServer] = None
     
     # Workspace commands
     def cmd_workspace_create(self, args):
@@ -50,7 +47,8 @@ class CollaborationCLI:
         )
         print(f"Created workspace: {ws.workspace_id}")
         print(f"  Name: {ws.name}")
-        print(f"  Owner: {ws.owner_id}")
+        if hasattr(ws, 'owner_id') and ws.owner_id:
+            print(f"  Owner: {ws.owner_id}")
         return ws
     
     def cmd_workspace_list(self, args):
@@ -65,8 +63,11 @@ class CollaborationCLI:
         
         print(f"Workspaces ({len(workspaces)}):")
         for ws in workspaces:
-            print(f"  {ws.workspace_id}: {ws.name} (owner: {ws.owner_id})")
-            print(f"    Agents: {len(ws.agent_ids)}, Tasks: {len(ws.task_ids)}")
+            print(f"  {ws.workspace_id}: {ws.name}")
+            if hasattr(ws, 'owner_id') and ws.owner_id:
+                print(f"    Owner: {ws.owner_id}")
+            agents = getattr(ws, 'agents', [])
+            print(f"    Agents: {len(agents)}")
     
     def cmd_workspace_info(self, args):
         """Get workspace info."""
@@ -78,10 +79,11 @@ class CollaborationCLI:
         print(f"Workspace: {ws.workspace_id}")
         print(f"  Name: {ws.name}")
         print(f"  Description: {ws.description}")
-        print(f"  Owner: {ws.owner_id}")
-        print(f"  Active: {ws.is_active}")
-        print(f"  Agents: {ws.agent_ids}")
-        print(f"  Tasks: {ws.task_ids}")
+        if hasattr(ws, 'owner_id') and ws.owner_id:
+            print(f"  Owner: {ws.owner_id}")
+        if hasattr(ws, 'is_active'):
+            print(f"  Active: {ws.is_active}")
+        print(f"  Agents: {getattr(ws, 'agents', [])}")
         print(f"  Created: {ws.created_at}")
     
     def cmd_workspace_delete(self, args):
@@ -157,7 +159,7 @@ class CollaborationCLI:
     # Task commands
     def cmd_task_create(self, args):
         """Create a new task."""
-        priority = TaskPriority(args.priority) if args.priority else TaskPriority.MEDIUM
+        priority = Priority(args.priority) if args.priority else Priority.MEDIUM
         task = self.task_mgr.create_task(
             title=args.title,
             description=args.description or "",
