@@ -153,17 +153,18 @@ WORKSPACES_DIR = HERMES_HOME / "workspaces"
 CURRENT_WS_FILE = WORKSPACES_DIR / ".current"
 
 
-def get_workspace_path(workspace_id: str) -> Path:
+def get_workspace_path(workspace_id: str, base_path: Path | None = None) -> Path:
     """Return the filesystem directory for a workspace."""
-    return WORKSPACES_DIR / workspace_id
+    root = base_path or WORKSPACES_DIR
+    return root / workspace_id
 
 
-def ensure_workspace_files(workspace_id: str) -> Path:
+def ensure_workspace_files(workspace_id: str, base_path: Path | None = None) -> Path:
     """Create workspace directory and all JSON data files if they don't exist.
 
     Returns the workspace Path. Safe to call repeatedly.
     """
-    ws_path = get_workspace_path(workspace_id)
+    ws_path = get_workspace_path(workspace_id, base_path)
     ws_path.mkdir(parents=True, exist_ok=True)
     for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json"]:
         fp = ws_path / filename

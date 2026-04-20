@@ -36,18 +36,39 @@ class WorkspaceManager:
     def __init__(self, base_path: str = None):
         self._bus = get_event_bus()
         if base_path:
-            global WORKSPACES_DIR
-            WORKSPACES_DIR = Path(base_path).expanduser() / "workspaces"
-        WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
+            self._base_path = Path(base_path).expanduser()
+        else:
+            self._base_path = None
+        # Ensure the workspaces directory exists
+        self._ws_root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def _ws_root(self) -> Path:
+        """Return the workspaces root directory for this manager instance."""
+        return (self._base_path or HERMES_HOME) / "workspaces"
+
+    def _ws_file(self, workspace_id: str) -> Path:
+        """Return the path to a workspace's workspace.json file."""
+        return self._ws_root / workspace_id / "workspace.json"
+
+    def _ensure_ws(self, workspace_id: str) -> Path:
+        """Ensure workspace directory and JSON files exist. Returns the ws Path."""
+        ws_path = self._ws_root / workspace_id
+        ws_path.mkdir(parents=True, exist_ok=True)
+        for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json"]:
+            fp = ws_path / filename
+            if not fp.exists():
+                fp.write_text("[]" if filename != "config.json" else "{}")
+        return ws_path
 
     # ─── CRUD ─────────────────────────────────────────────────────────────────
 
     def list(self) -> list[Workspace]:
         """List all workspaces."""
-        if not WORKSPACES_DIR.exists():
+        if not self._ws_root.exists():
             return []
         stores = []
-        for subdir in WORKSPACES_DIR.iterdir():
+        for subdir in self._ws_root.iterdir():
             if subdir.is_dir() and subdir.name != ".current":
                 ws_file = subdir / "workspace.json"
                 if ws_file.exists():
@@ -69,8 +90,7 @@ class WorkspaceManager:
 
     def get(self, workspace_id: str) -> Workspace | None:
         """Get a workspace by ID."""
-        ws_path = get_workspace_path(workspace_id)
-        ws_file = ws_path / "workspace.json"
+        ws_file = self._ws_file(workspace_id)
         if not ws_file.exists():
             return None
         store = JsonFileStore(ws_file, Workspace)
@@ -79,8 +99,8 @@ class WorkspaceManager:
     def create(self, name: str, description: str = "") -> Workspace:
         """Create a new workspace."""
         workspace = Workspace.new(name=name, description=description)
-        ws_path = ensure_workspace_files(workspace.workspace_id)
-        store = JsonFileStore(ws_path / "workspace.json", Workspace)
+        self._ensure_ws(workspace.workspace_id)
+        store = JsonFileStore(self._ws_file(workspace.workspace_id), Workspace)
         store.upsert(workspace)
         self._bus.emit_sync(Event(
             EventType.WORKSPACE_CREATED,
@@ -95,8 +115,7 @@ class WorkspaceManager:
 
     def update(self, workspace_id: str, **fields) -> Workspace:
         """Update workspace fields."""
-        ws_path = get_workspace_path(workspace_id)
-        ws_file = ws_path / "workspace.json"
+        ws_file = self._ws_file(workspace_id)
         if not ws_file.exists():
             raise KeyError(f"Workspace {workspace_id} not found")
         store = JsonFileStore(ws_file, Workspace)
@@ -118,7 +137,7 @@ class WorkspaceManager:
 
     def delete(self, workspace_id: str) -> bool:
         """Delete a workspace and all its data."""
-        ws_path = get_workspace_path(workspace_id)
+        ws_path = self._ws_root / workspace_id
         if not ws_path.exists():
             return False
         shutil.rmtree(ws_path)
@@ -137,8 +156,6 @@ class WorkspaceManager:
 
     def list_workspaces(self, owner_id: str = None, is_active: bool = True) -> list[Workspace]:
         """List workspaces (CLI compatibility)."""
-        # Note: Workspace model doesn't have owner_id/is_active fields,
-        # so we just return all workspaces
         return self.list()
 
     def create_workspace(self, name: str, owner_id: str, description: str = "") -> Workspace:
@@ -173,14 +190,13 @@ class WorkspaceManager:
         ws = self.get_current()
         if ws:
             return ws
-        # Create a default workspace if none exists
         return self.create("default", description="Default workspace")
 
     # ─── Agent helpers ─────────────────────────────────────────────────────────
 
     def _register_default_agent(self, workspace_id: str, workspace_name: str):
         """Register a default agent for a new workspace."""
-        ws_path = get_workspace_path(workspace_id)
+        ws_path = self._ws_root / workspace_id
         agent_store = JsonFileStore(ws_path / "agents.json", Agent)
         default_agent = Agent.new(
             name=f"{workspace_name}-agent",

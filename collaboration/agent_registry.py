@@ -4,15 +4,16 @@ Manages Agent profiles within a workspace: registration, status updates,
 and heartbeat tracking for online/offline detection.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from collaboration.events import Event, EventType, get_event_bus
 from collaboration.models import Agent, AgentRole, AgentStatus
-from collaboration.storage import JsonFileStore, ensure_workspace_files
+from collaboration.storage import HERMES_HOME, JsonFileStore
 
 _log = logging.getLogger(__name__)
 
@@ -29,22 +30,29 @@ class AgentRegistry:
 
     def __init__(self, workspace_id: str = None, base_path: str = None):
         if base_path:
-            # CLI mode: use base_path/workspaces/<first_workspace>/agents.json
-            from collaboration.storage import HERMES_HOME, WORKSPACES_DIR
-            self.base_path = Path(base_path).expanduser()
-            # Find first workspace to get agents
-            if WORKSPACES_DIR.exists():
-                for subdir in WORKSPACES_DIR.iterdir():
-                    if subdir.is_dir() and subdir.name != ".current":
-                        workspace_id = subdir.name
-                        break
-            if workspace_id is None:
-                workspace_id = "default"
+            self._base_path = Path(base_path).expanduser()
+        else:
+            self._base_path = None
         self.workspace_id = workspace_id
-        ws_path = ensure_workspace_files(workspace_id)
-        self._store = JsonFileStore.for_agents(ws_path)
+        self._ensure_ws_files()
+        self._store = JsonFileStore.for_agents(self._ws_root / workspace_id)
         self._bus = get_event_bus()
         self._heartbeats: dict[str, float] = {}  # agent_id -> last beat time
+
+    @property
+    def _ws_root(self) -> Path:
+        return (self._base_path or HERMES_HOME) / "workspaces"
+
+    def _ensure_ws_files(self) -> None:
+        """Ensure workspace directory and JSON files exist."""
+        if self.workspace_id is None:
+            return
+        ws_path = self._ws_root / self.workspace_id
+        ws_path.mkdir(parents=True, exist_ok=True)
+        for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json"]:
+            fp = ws_path / filename
+            if not fp.exists():
+                fp.write_text("[]" if filename != "config.json" else "{}")
 
     # ─── CLI compatibility aliases ───────────────────────────────────────────
 
