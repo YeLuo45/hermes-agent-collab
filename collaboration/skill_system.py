@@ -18,37 +18,54 @@ except ImportError:
 class SkillSystem:
     """Manages skills and agent skill assignments."""
 
-    def __init__(self, workspace_id: str = None):
-        if workspace_id:
-            from collaboration.storage import ensure_workspace_files
-            ws_path = ensure_workspace_files(workspace_id)
-            self._workspace_id = workspace_id
-            self.store = JsonFileStore.for_skills(ws_path)
+    def __init__(self, workspace_id: str = None, base_path: str = None):
+        if base_path:
+            self._base_path = Path(base_path).expanduser()
         else:
-            from collaboration.storage import HERMES_HOME
-            self._workspace_id = None
-            self.base_path = HERMES_HOME / "collab"
-            self.base_path.mkdir(parents=True, exist_ok=True)
-            self.store = JsonFileStore.for_skills(self.base_path)
+            self._base_path = None
+        self._workspace_id = workspace_id
+        self._ensure_ws_files()
+        self.store = JsonFileStore.for_skills(self._ws_root / workspace_id)
+
+    @property
+    def _ws_root(self) -> Path:
+        from collaboration.storage import HERMES_HOME
+        return (self._base_path or HERMES_HOME) / "workspaces"
+
+    def _ensure_ws_files(self) -> None:
+        """Ensure workspace directory and JSON files exist."""
+        if self._workspace_id is None:
+            return
+        ws_path = self._ws_root / self._workspace_id
+        ws_path.mkdir(parents=True, exist_ok=True)
+        for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json"]:
+            fp = ws_path / filename
+            if not fp.exists():
+                fp.write_text("[]" if filename != "config.json" else "{}")
 
     def create_skill(
         self,
         name: str,
         category: SkillCategory,
         description: str = "",
-        config: dict = None,
-        version: str = "1.0.0"
+        version: str = "1.0.0",
+        commands: list[str] = None,
+        tags: list[str] = None,
+        level: str = "novice",
+        author: str = None,
     ) -> Skill:
         """Create a new skill."""
         skill_id = f"skill_{uuid.uuid4().hex[:12]}"
-        skill = Skill(
-            skill_id=skill_id,
+        skill = Skill.new(
             name=name,
             category=category,
             description=description,
-            config=config or {},
-            version=version
+            author=author,
+            workspace_id=self._workspace_id,
+            commands=commands or [],
+            tags=tags or [],
         )
+        skill.version = version
         self.store.upsert(skill)
         return skill
 
