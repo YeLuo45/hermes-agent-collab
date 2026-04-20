@@ -1,7 +1,7 @@
 # Hermes Agent 团队协作增强
 
 **Proposal ID**: P-20260419-005
-**Status**: in_dev
+**Status**: in_acceptance
 **GitHub Repo**: https://github.com/YeLuo45/hermes-agent
 
 ## 项目简介
@@ -11,45 +11,34 @@
 核心功能：
 - **多工作区**：按团队组织工作区，数据隔离
 - **Agent 即队友**：Agent Profile 系统，状态实时同步
-- **任务协作**：完整任务生命周期管理（pending→claimed→in_progress→completed/failed/blocked）
+- **任务协作**：完整任务生命周期管理（pending→in_progress→completed/failed/blocked）
 - **WebSocket 实时推送**：任务/Agent 状态变更实时广播
 - **技能系统**：可复用技能库，团队共享
-- **统一运行时**：CLI 自动检测，资源监控
+- **统一运行时**：CLI 一键调用，资源监控
 
 ## 目录结构
 
 ```
 hermes-agent/
-├── collaboration/           # 协作模块核心代码
-│   ├── __init__.py         # 模块导出
-│   ├── __main__.py         # CLI 入口
-│   ├── models.py           # 数据模型（Agent/Task/Skill/Workspace）
-│   ├── storage.py          # JSON 存储层（文件锁）
-│   ├── workspace.py        # 工作区管理
-│   ├── agent_registry.py   # Agent Profile 管理
-│   ├── task.py             # 任务生命周期
-│   ├── skill_system.py     # 技能系统
-│   ├── events.py           # 事件总线
-│   ├── websocket_server.py # WebSocket 服务
-│   ├── collab_api.py       # FastAPI REST API
-│   ├── server.py           # 独立服务器
-│   ├── cli.py              # CLI 命令
-│   ├── monitor.py          # 运行时监控
-│   └── web/                # 独立 Web UI（构建产物）
-└── docs/                   # 文档
-    ├── prd.v1.md
-    └── technical-solution.v1.md
+├── docs/                   # 文档
+│   ├── prd.v1.md
+│   └── technical-solution.v1.md
+└── （协作模块代码位于 ~/.hermes/collab/）
 ```
 
+协作模块实际安装位置：`~/.hermes/collab/`
+
 ## 运行方式
+
+### 前置要求
+
+`collab` 命令已通过 `~/bin/collab` 包装脚本提供。确保 `~/bin` 在 PATH 中（新终端自动生效，或手动 `source ~/.bash_aliases`）。
 
 ### 1. 独立服务器模式（推荐）
 
 ```bash
-cd ~/.hermes/workspace-dev/proposals/hermes-agent
-
 # 启动协作服务器（REST API + WebSocket + Web UI）
-python3 -m collaboration server --port 9119 --host 0.0.0.0
+collab server
 
 # 访问 Web UI
 open http://127.0.0.1:9119
@@ -59,27 +48,27 @@ open http://127.0.0.1:9119
 
 ```bash
 # 工作区管理
-python3 -m collaboration workspace list
-python3 -m collaboration workspace create my-team
-python3 -m collaboration workspace switch <workspace_id>
+collab workspace list
+collab workspace create --name "my-team" --owner agent-1
 
 # Agent 管理
-python3 -m collaboration agent list
-python3 -m collaboration agent register --name "DevBot" --role developer
+collab agent list
+collab agent register --name "DevBot" --role developer --workspace ws-xxx
 
 # 任务管理
-python3 -m collaboration task list
-python3 -m collaboration task create "实现登录功能"
-python3 -m collaboration task claim <task_id>
-python3 -m collaboration task complete <task_id>
+collab task list --workspace ws-xxx
+collab task create --title "实现登录功能" --workspace ws-xxx
+collab task update <task_id> start --agent-id agent-1
+collab task update <task_id> complete
 
 # 技能管理
-python3 -m collaboration skill list
-python3 -m collaboration skill register --name "debug-react" --commands "npm run debug"
+collab skill list
+collab skill create --name "debug-react" --category devops
 
 # 运行时监控
-python3 -m collaboration monitor health
-python3 -m collaboration monitor status
+collab monitor health
+collab monitor events --limit 20
+collab monitor stats
 ```
 
 ### 3. API 端点

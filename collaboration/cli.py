@@ -125,9 +125,9 @@ class CollaborationCLI:
         
         print(f"Agents ({len(agents)}):")
         for agent in agents:
-            status_icon = "🟢" if agent.status == AgentStatus.ONLINE else "🔴"
+            status_icon = "🟢" if agent.status.value == "idle" else "🔴"
             print(f"  {status_icon} {agent.agent_id}: {agent.name} ({agent.role})")
-            if agent.current_task_id:
+            if getattr(agent, 'current_task_id', None):
                 print(f"      Task: {agent.current_task_id}")
     
     def cmd_agent_info(self, args):
@@ -194,12 +194,11 @@ class CollaborationCLI:
                 TaskStatus.BLOCKED: "🚫",
                 TaskStatus.COMPLETED: "✅",
                 TaskStatus.FAILED: "❌",
-                TaskStatus.CANCELLED: "➖"
             }.get(task.status, "❓")
             print(f"  {status_icon} {task.task_id}: {task.title}")
             print(f"      Priority: {task.priority.value}, Status: {task.status.value}")
-            if task.assignee_id:
-                print(f"      Assignee: {task.assignee_id}")
+            if task.assignee:
+                print(f"      Assignee: {task.assignee}")
     
     def cmd_task_info(self, args):
         """Get task info."""
@@ -213,15 +212,13 @@ class CollaborationCLI:
         print(f"  Description: {task.description}")
         print(f"  Status: {task.status.value}")
         print(f"  Priority: {task.priority.value}")
-        print(f"  Owner: {task.owner_id}")
-        print(f"  Assignee: {task.assignee_id}")
+        print(f"  Owner: {task.creator}")
+        print(f"  Assignee: {task.assignee}")
         print(f"  Workspace: {task.workspace_id}")
-        print(f"  Skills Required: {task.skills_required}")
-        print(f"  Blocked By: {task.blocked_by}")
-        if task.started_at:
-            print(f"  Started: {task.started_at}")
-        if task.completed_at:
-            print(f"  Completed: {task.completed_at}")
+        if task.blocked_reason:
+            print(f"  Blocked: {task.blocked_reason}")
+        if task.depends_on:
+            print(f"  Depends on: {task.depends_on}")
     
     def cmd_task_update(self, args):
         """Update task status."""
