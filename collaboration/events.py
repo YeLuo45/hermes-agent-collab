@@ -20,6 +20,8 @@ class EventType(str, Enum):
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
     TASK_DELETED = "task.deleted"
+    TASK_COMPLETED = "task.completed"
+    TASK_FAILED = "task.failed"
     # Agent events
     AGENT_REGISTERED = "agent.registered"
     AGENT_STATUS_CHANGED = "agent.status_changed"
@@ -170,3 +172,70 @@ class EventBus:
         except RuntimeError:
             # No running loop — create a temporary one
             asyncio.run(self.emit(event))
+
+    # ─── Convenience helpers (API compatibility) ─────────────────────────────────
+
+    async def emit_agent_registered(
+        self, agent_id: str, workspace_id: str | None = None, agent_data: dict | None = None
+    ):
+        await self.emit(Event(
+            EventType.AGENT_REGISTERED,
+            workspace_id=workspace_id,
+            payload=agent_data or {"agent_id": agent_id},
+        ))
+
+    async def emit_agent_status_changed(
+        self, agent_id: str, old_status: str, new_status: str,
+        workspace_id: str | None = None, **kwargs
+    ):
+        await self.emit(Event(
+            EventType.AGENT_STATUS_CHANGED,
+            workspace_id=workspace_id,
+            payload={"agent_id": agent_id, "old_status": old_status, "new_status": new_status, **kwargs},
+        ))
+
+    async def emit_task_created(
+        self, task_id: str, workspace_id: str | None = None, task_data: dict | None = None
+    ):
+        await self.emit(Event(
+            EventType.TASK_CREATED,
+            workspace_id=workspace_id,
+            payload=task_data or {"task_id": task_id},
+        ))
+
+    async def emit_task_updated(
+        self, task_id: str, workspace_id: str | None = None, task_data: dict | None = None
+    ):
+        await self.emit(Event(
+            EventType.TASK_UPDATED,
+            workspace_id=workspace_id,
+            payload=task_data or {"task_id": task_id},
+        ))
+
+    async def emit_task_completed(
+        self, task_id: str, workspace_id: str | None = None, task_data: dict | None = None
+    ):
+        await self.emit(Event(
+            EventType.TASK_COMPLETED,
+            workspace_id=workspace_id,
+            payload=task_data or {"task_id": task_id},
+        ))
+
+    async def emit_task_failed(
+        self, task_id: str, error: str | None = None,
+        workspace_id: str | None = None, task_data: dict | None = None
+    ):
+        await self.emit(Event(
+            EventType.TASK_FAILED,
+            workspace_id=workspace_id,
+            payload=task_data or {"task_id": task_id, "error": error},
+        ))
+
+    async def emit_skill_created(
+        self, skill_id: str, workspace_id: str | None = None, skill_data: dict | None = None
+    ):
+        await self.emit(Event(
+            EventType.SKILL_CREATED,
+            workspace_id=workspace_id,
+            payload=skill_data or {"skill_id": skill_id},
+        ))

@@ -266,7 +266,7 @@ async def update_agent_status(agent_id: str, data: AgentStatusUpdate):
     old_status = old_profile.status.value if old_profile.status else "unknown"
     new_status = AgentStatus(data.status)
     
-    success = agent_registry.update_status(agent_id, new_status)
+    success = agent_registry.set_status(agent_id, new_status)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to update status")
     
@@ -283,7 +283,7 @@ async def update_agent_status(agent_id: str, data: AgentStatusUpdate):
 @router.delete("/agents/{agent_id}")
 async def unregister_agent(agent_id: str):
     """Unregister an agent."""
-    success = agent_registry.delete_agent(agent_id)
+    success = agent_registry.unregister(agent_id)
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"success": True, "agent_id": agent_id}
@@ -323,9 +323,6 @@ async def create_task(data: TaskCreate):
         skills_required=data.skills_required or [],
         blocked_by=data.blocked_by or []
     )
-    
-    # Add task to workspace
-    workspace_mgr.add_task_to_workspace(data.workspace_id, task.task_id)
     
     await event_bus.emit_task_created(
         task.task_id,
@@ -699,7 +696,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 agent_id = data.get("agent_id")
                 status = data.get("status")
                 if agent_id and status:
-                    agent_registry.update_status(agent_id, AgentStatus(status))
+                    agent_registry.set_status(agent_id, AgentStatus(status))
                     await websocket.send_json({
                         "type": "agent_update",
                         "payload": {"agent_id": agent_id, "status": status}

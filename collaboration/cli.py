@@ -150,7 +150,7 @@ class CollaborationCLI:
     def cmd_agent_status(self, args):
         """Update agent status."""
         status = AgentStatus(args.status)
-        success = self.agent_registry.update_status(args.agent_id, status)
+        success = self.agent_registry.set_status(args.agent_id, status)
         if success:
             print(f"Updated agent status: {args.agent_id} -> {status.value}")
         else:
