@@ -76,10 +76,14 @@ def create_app() -> FastAPI:
     # Include collaboration API router
     app.include_router(collab_router)
     
-    # SPA fallback for web UI routes
+    # SPA fallback for web UI routes (only non-API paths)
     if web_dist and web_dist.exists():
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str):
+            # Don't intercept API calls - let collab_router handle them
+            if full_path.startswith("api/"):
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
             file_path = web_dist / full_path
             if full_path and file_path.exists() and file_path.is_file():
                 return FileResponse(file_path)

@@ -289,6 +289,40 @@ async def unregister_agent(agent_id: str):
     return {"success": True, "agent_id": agent_id}
 
 
+@router.post("/agents/{agent_id}/message")
+async def agent_message(agent_id: str, data: dict):
+    """Send a message to an agent and get a response."""
+    agent = agent_registry.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    content = data.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content required")
+
+    # Record the message
+    msg_id = f"msg_{datetime.now().timestamp()}"
+    msg = {
+        "msg_id": msg_id,
+        "agent_id": agent_id,
+        "role": "user",
+        "content": content,
+        "ts": datetime.now().isoformat()
+    }
+
+    # TODO: route to actual agent handler when implemented
+    # For now, simulate a response
+    response_content = f"[{agent.name}] 收到消息: {content}"
+
+    return {
+        "msg_id": f"resp_{msg_id}",
+        "agent_id": agent_id,
+        "role": "assistant",
+        "content": response_content,
+        "ts": datetime.now().isoformat()
+    }
+
+
 # =============================================================================
 # Task Endpoints
 # =============================================================================
