@@ -521,6 +521,8 @@ async def update_skill(
     skill_id: str,
     name: Optional[str] = None,
     description: Optional[str] = None,
+    category: Optional[str] = None,
+    tags: Optional[list[str]] = None,
     config: Optional[dict] = None,
     enabled: Optional[bool] = None
 ):
@@ -529,6 +531,8 @@ async def update_skill(
         skill_id,
         name=name,
         description=description,
+        category=category,
+        tags=tags,
         config=config,
         enabled=enabled
     )

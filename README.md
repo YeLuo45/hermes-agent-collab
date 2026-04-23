@@ -1,8 +1,9 @@
 # Hermes Agent 团队协作增强
 
 **Proposal ID**: P-20260419-005
-**Status**: in_acceptance
-**GitHub Repo**: https://github.com/YeLuo45/hermes-agent
+**Status**: accepted (Phase 1-3)
+**GitHub Repo**: https://github.com/YeLuo45/hermes-agent-collab
+**Web UI**: https://yeluo45.github.io/hermes-agent-collab/
 
 ## 项目简介
 

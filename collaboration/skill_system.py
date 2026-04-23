@@ -78,6 +78,8 @@ class SkillSystem:
         skill_id: str,
         name: str = None,
         description: str = None,
+        category: str = None,
+        tags: list[str] = None,
         config: dict = None,
         enabled: bool = None
     ) -> Optional[Skill]:
@@ -90,6 +92,10 @@ class SkillSystem:
             skill.name = name
         if description is not None:
             skill.description = description
+        if category is not None:
+            skill.category = SkillCategory(category)
+        if tags is not None:
+            skill.tags = tags
         if config is not None:
             skill.config.update(config)
         if enabled is not None:
