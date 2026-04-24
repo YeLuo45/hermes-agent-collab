@@ -45,39 +45,69 @@ _log = logging.getLogger(__name__)
 COLLAB_BASE = Path("~/.hermes/collab").expanduser()
 COLLAB_BASE.mkdir(parents=True, exist_ok=True)
 
-# Per-workspace manager cache — lazily initialized per workspace_id
-_manager_cache: dict[str, dict] = {}
-
-def _get_workspace_managers(workspace_id: str | None = None):
-    """Lazily get or create managers for a workspace.
-    
-    If workspace_id is None, returns managers for the current workspace
-    (or creates a 'default' workspace if none exists).
-    """
-    if workspace_id is None:
-        from collaboration.storage import get_current_workspace_id
-        workspace_id = get_current_workspace_id()
-        if workspace_id is None:
-            # Auto-create a default workspace
-            ws_mgr = WorkspaceManager()
-            ws = ws_mgr.create_workspace(name="default", owner_id="system")
-            workspace_id = ws.workspace_id
-    
-    if workspace_id not in _manager_cache:
-        from collaboration.storage import ensure_workspace_files
-        ws_path = ensure_workspace_files(workspace_id)
-        _manager_cache[workspace_id] = {
-            "workspace_id": workspace_id,
-            "agents": AgentRegistry(workspace_id),
-            "tasks": TaskManager(workspace_id),
-            "skills": SkillSystem(workspace_id),
-        }
-    
-    return _manager_cache[workspace_id]
-
 # WorkspaceManager is stateless (no per-workspace state) so one instance suffices
 workspace_mgr = WorkspaceManager()
 event_bus = get_event_bus()
+
+# Default workspace managers (lazily initialized on first request)
+_default_workspace_id: str | None = None
+_default_managers: dict | None = None
+_managers_lock = threading.Lock()
+
+
+def _get_default_managers():
+    """Get or create managers for the default workspace."""
+    global _default_workspace_id, _default_managers
+    if _default_managers is not None:
+        return _default_managers
+    with _managers_lock:
+        if _default_managers is not None:
+            return _default_managers
+        from collaboration.storage import get_current_workspace_id, ensure_workspace_files
+        _default_workspace_id = get_current_workspace_id()
+        if _default_workspace_id is None:
+            ws = workspace_mgr.create_workspace(name="default", owner_id="system")
+            _default_workspace_id = ws.workspace_id
+        ws_path = ensure_workspace_files(_default_workspace_id)
+        _default_managers = {
+            "workspace_id": _default_workspace_id,
+            "agents": AgentRegistry(_default_workspace_id),
+            "tasks": TaskManager(_default_workspace_id),
+            "skills": SkillSystem(_default_workspace_id),
+        }
+    return _default_managers
+
+
+def _agent_registry():
+    return _get_default_managers()["agents"]
+
+
+def _skill_system():
+    return _get_default_managers()["skills"]
+
+
+def _task_manager():
+    return _get_default_managers()["tasks"]
+
+
+# RuntimeMonitor instance (stateless, no workspace_id needed)
+monitor = RuntimeMonitor()
+
+
+# Backward-compatibility aliases — resolve lazily at call time
+@property
+def _agent_registry_prop():
+    return _get_default_managers()["agents"]
+
+
+@property
+def _skill_system_prop():
+    return _get_default_managers()["skills"]
+
+
+@property
+def _task_manager_prop():
+    return _get_default_managers()["tasks"]
 
 # Create FastAPI router
 router = APIRouter(prefix="/api/collab", tags=["collaboration"])
@@ -145,9 +175,30 @@ class SkillCreate(BaseModel):
     config: Optional[dict] = {}
 
 
+class MessageCreate(BaseModel):
+    content: str
+
+
 # =============================================================================
 # Workspace Endpoints
 # =============================================================================
+
+@router.get("/")
+async def root():
+    """API root — list available endpoints."""
+    return {
+        "service": "Hermes Agent Collaboration API",
+        "version": "1.0",
+        "endpoints": {
+            "workspaces": "/api/collab/workspaces",
+            "agents": "/api/collab/agents",
+            "tasks": "/api/collab/tasks",
+            "skills": "/api/collab/skills",
+            "monitor": "/api/collab/monitor/health",
+            "websocket": "/api/collab/ws",
+        }
+    }
+
 
 @router.get("/workspaces")
 async def list_workspaces(owner_id: Optional[str] = None, active_only: bool = True):
@@ -221,7 +272,7 @@ async def list_agents(
     role: Optional[str] = None
 ):
     """List agents with optional filtering."""
-    agents = agent_registry.list_agents(
+    agents = _agent_registry().list_agents(
         workspace_id=workspace_id,
         status=AgentStatus(status) if status else None,
         role=role
@@ -232,7 +283,7 @@ async def list_agents(
 @router.post("/agents")
 async def register_agent(data: AgentCreate):
     """Register a new agent."""
-    profile = agent_registry.register_agent(
+    profile = _agent_registry().register_agent(
         name=data.name,
         role=data.role,
         description=data.description or "",
@@ -250,7 +301,7 @@ async def register_agent(data: AgentCreate):
 @router.get("/agents/{agent_id}")
 async def get_agent(agent_id: str):
     """Get agent details."""
-    profile = agent_registry.get_agent(agent_id)
+    profile = _agent_registry().get_agent(agent_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Agent not found")
     return profile.to_dict()
@@ -259,14 +310,14 @@ async def get_agent(agent_id: str):
 @router.patch("/agents/{agent_id}/status")
 async def update_agent_status(agent_id: str, data: AgentStatusUpdate):
     """Update agent status."""
-    old_profile = agent_registry.get_agent(agent_id)
+    old_profile = _agent_registry().get_agent(agent_id)
     if not old_profile:
         raise HTTPException(status_code=404, detail="Agent not found")
     
     old_status = old_profile.status.value if old_profile.status else "unknown"
     new_status = AgentStatus(data.status)
     
-    success = agent_registry.set_status(agent_id, new_status)
+    success = _agent_registry().set_status(agent_id, new_status)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to update status")
     
@@ -283,43 +334,80 @@ async def update_agent_status(agent_id: str, data: AgentStatusUpdate):
 @router.delete("/agents/{agent_id}")
 async def unregister_agent(agent_id: str):
     """Unregister an agent."""
-    success = agent_registry.unregister(agent_id)
+    success = _agent_registry().unregister(agent_id)
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"success": True, "agent_id": agent_id}
 
 
 @router.post("/agents/{agent_id}/message")
-async def agent_message(agent_id: str, data: dict):
-    """Send a message to an agent and get a response."""
-    agent = agent_registry.get_agent(agent_id)
+async def agent_message(agent_id: str, data: MessageCreate):
+    """Send a message to an agent — forwards to Hermes AIAgent for actual LLM processing."""
+    agent = _agent_registry().get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    content = data.get("content", "")
-    if not content:
-        raise HTTPException(status_code=400, detail="Message content required")
+    content = data.content
 
-    # Record the message
-    msg_id = f"msg_{datetime.now().timestamp()}"
-    msg = {
-        "msg_id": msg_id,
-        "agent_id": agent_id,
-        "role": "user",
-        "content": content,
-        "ts": datetime.now().isoformat()
-    }
+    # Run Hermes AIAgent.chat() in a thread pool to avoid blocking the async event loop
+    def _hermes_chat() -> str:
+        import subprocess, json, sys as _sys
+        from pathlib import Path
 
-    # TODO: route to actual agent handler when implemented
-    # For now, simulate a response
-    response_content = f"[{agent.name}] 收到消息: {content}"
+        HERMES_AGENT_ROOT = Path.home() / ".hermes" / "hermes-agent"
+        VENV_PY = HERMES_AGENT_ROOT / "venv" / "bin" / "python"
+
+        # Build a self-contained script that loads .env + config + calls AIAgent.chat()
+        script = f"""
+import sys, yaml
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path.home() / '.hermes' / '.env')
+sys.path.insert(0, '{HERMES_AGENT_ROOT}')
+from run_agent import AIAgent
+config_path = '{Path.home() / ".hermes" / "config.yaml"}'
+with open(config_path) as f:
+    config = yaml.safe_load(f)
+model_cfg = config.get('model', {{}})
+ag = AIAgent(
+    model=model_cfg.get('default', 'MiniMax-M2.7'),
+    base_url=model_cfg.get('base_url', ''),
+    provider=model_cfg.get('provider', ''),
+    platform='local',
+    quiet_mode=True,
+    verbose_logging=False,
+)
+import sys as _sys
+result = ag.chat({json.dumps(content)})
+print(result, end='')
+"""
+        try:
+            proc = subprocess.run(
+                [str(VENV_PY), "-c", script],
+                capture_output=True, text=True, timeout=60
+            )
+            if proc.returncode != 0:
+                return f"[Hermes 错误] subprocess: {proc.stderr.strip()}"
+            return proc.stdout or "（无响应）"
+        except subprocess.TimeoutExpired:
+            return "[Hermes 错误] 调用超时（60秒）"
+        except Exception as exc:
+            return f"[Hermes 错误] {type(exc).__name__}: {exc}"
+
+    try:
+        response_content = await asyncio.get_event_loop().run_in_executor(
+            None, _hermes_chat
+        )
+    except Exception as exc:
+        _log.exception("Hermes chat failed")
+        response_content = f"[Hermes 错误] {type(exc).__name__}: {exc}"
 
     return {
-        "msg_id": f"resp_{msg_id}",
+        "msg_id": f"resp_{datetime.now().timestamp()}",
         "agent_id": agent_id,
         "role": "assistant",
         "content": response_content,
-        "ts": datetime.now().isoformat()
+        "ts": datetime.now().isoformat(),
     }
 
 
@@ -335,7 +423,7 @@ async def list_tasks(
     assignee_id: Optional[str] = None
 ):
     """List tasks with optional filtering."""
-    tasks = task_mgr.list_tasks(
+    tasks = _task_manager().list_tasks(
         workspace_id=workspace_id,
         status=TaskStatus(status) if status else None,
         priority=Priority(priority) if priority else None,
@@ -347,7 +435,7 @@ async def list_tasks(
 @router.post("/tasks")
 async def create_task(data: TaskCreate):
     """Create a new task."""
-    task = task_mgr.create_task(
+    task = _task_manager().create_task(
         title=data.title,
         description=data.description or "",
         workspace_id=data.workspace_id,
@@ -370,7 +458,7 @@ async def create_task(data: TaskCreate):
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str):
     """Get task details."""
-    task = task_mgr.get_task(task_id)
+    task = _task_manager().get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task.to_dict()
@@ -379,7 +467,7 @@ async def get_task(task_id: str):
 @router.patch("/tasks/{task_id}")
 async def update_task(task_id: str, data: TaskUpdate):
     """Update task properties."""
-    task = task_mgr.update_task(
+    task = _task_manager().update_task(
         task_id,
         title=data.title,
         description=data.description,
@@ -417,30 +505,30 @@ async def task_action(task_id: str, data: TaskAction):
     if data.action == "start":
         if not data.agent_id:
             raise HTTPException(status_code=400, detail="agent_id required for start")
-        task = task_mgr.start_task(task_id, data.agent_id)
+        task = _task_manager().start_task(task_id, data.agent_id)
         if task:
-            agent_registry.assign_task(data.agent_id, task_id)
+            _agent_registry().assign_task(data.agent_id, task_id)
     
     elif data.action == "complete":
-        task = task_mgr.complete_task(task_id, data.result)
+        task = _task_manager().complete_task(task_id, data.result)
         if task and task.assignee_id:
-            agent_registry.clear_task(task.assignee_id)
+            _agent_registry().clear_task(task.assignee_id)
     
     elif data.action == "fail":
-        task = task_mgr.fail_task(task_id, data.error or "Unknown error")
+        task = _task_manager().fail_task(task_id, data.error or "Unknown error")
         if task and task.assignee_id:
-            agent_registry.clear_task(task.assignee_id)
+            _agent_registry().clear_task(task.assignee_id)
     
     elif data.action == "block":
         if not data.blockers:
             raise HTTPException(status_code=400, detail="blockers required for block")
-        task = task_mgr.block_task(task_id, data.blockers)
+        task = _task_manager().block_task(task_id, data.blockers)
     
     elif data.action == "unblock":
-        task = task_mgr.unblock_task(task_id)
+        task = _task_manager().unblock_task(task_id)
     
     elif data.action == "cancel":
-        task = task_mgr.cancel_task(task_id)
+        task = _task_manager().cancel_task(task_id)
     
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {data.action}")
@@ -468,7 +556,7 @@ async def task_action(task_id: str, data: TaskAction):
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str):
     """Delete a task."""
-    success = task_mgr.delete_task(task_id)
+    success = _task_manager().delete_task(task_id)
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"success": True, "task_id": task_id}
@@ -477,22 +565,22 @@ async def delete_task(task_id: str):
 @router.get("/tasks/{task_id}/subtasks")
 async def get_subtasks(task_id: str):
     """Get subtasks of a task."""
-    subtasks = task_mgr.get_subtasks(task_id)
+    subtasks = _task_manager().get_subtasks(task_id)
     return {"tasks": [t.to_dict() for t in subtasks]}
 
 
 @router.get("/workspaces/{workspace_id}/tasks")
 async def get_workspace_tasks(workspace_id: str):
     """Get all tasks in a workspace."""
-    tasks = task_mgr.get_tasks_by_workspace(workspace_id)
+    tasks = _task_manager().get_tasks_by_workspace(workspace_id)
     return {"tasks": [t.to_dict() for t in tasks]}
 
 
 @router.get("/workspaces/{workspace_id}/stats")
 async def get_workspace_stats(workspace_id: str):
     """Get workspace statistics."""
-    task_stats = task_mgr.get_task_stats(workspace_id)
-    workspace_metrics = monitor.get_workspace_metrics(workspace_id, task_mgr)
+    task_stats = _task_manager().get_task_stats(workspace_id)
+    workspace_metrics = _monitor().get_workspace_metrics(workspace_id, _task_manager())
     
     return {
         "task_stats": task_stats,
@@ -517,7 +605,7 @@ async def get_workspace_stats(workspace_id: str):
 @router.get("/skills")
 async def list_skills(category: Optional[str] = None, enabled_only: bool = False):
     """List skills with optional filtering."""
-    skills = skill_system.list_skills(
+    skills = _skill_system().list_skills(
         category=SkillCategory(category) if category else None,
         enabled= True if enabled_only else None
     )
@@ -527,7 +615,7 @@ async def list_skills(category: Optional[str] = None, enabled_only: bool = False
 @router.post("/skills")
 async def create_skill(data: SkillCreate):
     """Create a new skill."""
-    skill = skill_system.create_skill(
+    skill = _skill_system().create_skill(
         name=data.name,
         category=SkillCategory(data.category),
         description=data.description or "",
@@ -544,7 +632,7 @@ async def create_skill(data: SkillCreate):
 @router.get("/skills/{skill_id}")
 async def get_skill(skill_id: str):
     """Get skill details."""
-    skill = skill_system.get_skill(skill_id)
+    skill = _skill_system().get_skill(skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
     return skill.to_dict()
@@ -561,7 +649,7 @@ async def update_skill(
     enabled: Optional[bool] = None
 ):
     """Update skill properties."""
-    skill = skill_system.update_skill(
+    skill = _skill_system().update_skill(
         skill_id,
         name=name,
         description=description,
@@ -578,7 +666,7 @@ async def update_skill(
 @router.delete("/skills/{skill_id}")
 async def delete_skill(skill_id: str):
     """Delete a skill."""
-    success = skill_system.delete_skill(skill_id)
+    success = _skill_system().delete_skill(skill_id)
     if not success:
         raise HTTPException(status_code=404, detail="Skill not found")
     return {"success": True, "skill_id": skill_id}
@@ -587,14 +675,14 @@ async def delete_skill(skill_id: str):
 @router.get("/skills/search")
 async def search_skills(q: str, category: Optional[str] = None):
     """Search skills by name or description."""
-    skills = skill_system.search_skills(q, category=SkillCategory(category) if category else None)
+    skills = _skill_system().search_skills(q, category=SkillCategory(category) if category else None)
     return {"skills": [s.to_dict() for s in skills]}
 
 
 @router.get("/skills/stats")
 async def get_skill_stats():
     """Get skill statistics."""
-    return skill_system.get_skill_stats()
+    return _skill_system().get_skill_stats()
 
 
 # =============================================================================
@@ -734,7 +822,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 agent_id = data.get("agent_id")
                 status = data.get("status")
                 if agent_id and status:
-                    agent_registry.set_status(agent_id, AgentStatus(status))
+                    _agent_registry().set_status(agent_id, AgentStatus(status))
                     await websocket.send_json({
                         "type": "agent_update",
                         "payload": {"agent_id": agent_id, "status": status}
@@ -748,11 +836,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     if action == "start":
                         agent_id = data.get("agent_id")
                         if agent_id:
-                            task_mgr.start_task(task_id, agent_id)
+                            _task_manager().start_task(task_id, agent_id)
                     elif action == "complete":
-                        task_mgr.complete_task(task_id)
+                        _task_manager().complete_task(task_id)
                     elif action == "fail":
-                        task_mgr.fail_task(task_id, data.get("error", "Unknown"))
+                        _task_manager().fail_task(task_id, data.get("error", "Unknown"))
                     
                     await websocket.send_json({
                         "type": "task_update",
