@@ -26,7 +26,7 @@ try:
     from .skill_system import SkillSystem
     from .monitor import RuntimeMonitor
     from .events import EventBus, EventType, get_event_bus
-    from .acp_client import get_acp_client, close_acp_client
+    from .acp_client import get_agent_client, close_agent_client
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -39,7 +39,7 @@ except ImportError:
     from collaboration.skill_system import SkillSystem
     from collaboration.monitor import RuntimeMonitor
     from collaboration.events import EventBus, EventType, get_event_bus
-    from collaboration.acp_client import get_acp_client, close_acp_client
+    from collaboration.acp_client import get_agent_client, close_agent_client
 
 _log = logging.getLogger(__name__)
 
@@ -344,10 +344,13 @@ async def unregister_agent(agent_id: str):
 
 @router.post("/agents/{agent_id}/message")
 async def agent_message(agent_id: str, data: MessageCreate):
-    """Send a message to an agent — forwards to Hermes AIAgent via ACP protocol.
-    
-    Uses the running Hermes ACP adapter to process the message, reusing the
+    """Send a message to an agent — forwards to Hermes AIAgent via DirectAgentClient.
+
+    Uses subprocess-based AIAgent invocation to process the message, reusing the
     agent's environment (.env credentials) and session state.
+
+    Note: ACP adapter (python -m acp_adapter.entry) fails in this environment due to
+    asyncio selector fd registration issues. Using direct subprocess approach instead.
     """
     agent = _agent_registry().get_agent(agent_id)
     if not agent:
@@ -356,17 +359,17 @@ async def agent_message(agent_id: str, data: MessageCreate):
     content = data.content
 
     try:
-        client = await get_acp_client()
+        client = await get_agent_client()
         response = await client.send_message(
             content=content,
             session_id=agent_id,  # Use agent_id as session key for state reuse
-            timeout=60.0,
+            timeout=120.0,
         )
         response_content = response.content or "（无响应）"
     except asyncio.TimeoutError:
-        response_content = "[Hermes 错误] ACP 调用超时（60秒）"
+        response_content = "[Hermes 错误] Agent 调用超时（120秒）"
     except Exception as exc:
-        _log.exception("Hermes ACP chat failed")
+        _log.exception("Hermes Agent chat failed")
         response_content = f"[Hermes 错误] {type(exc).__name__}: {exc}"
 
     return {
