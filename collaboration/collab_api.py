@@ -26,6 +26,7 @@ try:
     from .skill_system import SkillSystem
     from .monitor import RuntimeMonitor
     from .events import EventBus, EventType, get_event_bus
+    from .acp_client import get_acp_client, close_acp_client
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -38,6 +39,7 @@ except ImportError:
     from collaboration.skill_system import SkillSystem
     from collaboration.monitor import RuntimeMonitor
     from collaboration.events import EventBus, EventType, get_event_bus
+    from collaboration.acp_client import get_acp_client, close_acp_client
 
 _log = logging.getLogger(__name__)
 
@@ -342,64 +344,29 @@ async def unregister_agent(agent_id: str):
 
 @router.post("/agents/{agent_id}/message")
 async def agent_message(agent_id: str, data: MessageCreate):
-    """Send a message to an agent — forwards to Hermes AIAgent for actual LLM processing."""
+    """Send a message to an agent — forwards to Hermes AIAgent via ACP protocol.
+    
+    Uses the running Hermes ACP adapter to process the message, reusing the
+    agent's environment (.env credentials) and session state.
+    """
     agent = _agent_registry().get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
     content = data.content
 
-    # Run Hermes AIAgent.chat() in a thread pool to avoid blocking the async event loop
-    def _hermes_chat() -> str:
-        import subprocess, json, sys as _sys
-        from pathlib import Path
-
-        HERMES_AGENT_ROOT = Path.home() / ".hermes" / "hermes-agent"
-        VENV_PY = HERMES_AGENT_ROOT / "venv" / "bin" / "python"
-
-        # Build a self-contained script that loads .env + config + calls AIAgent.chat()
-        script = f"""
-import sys, yaml
-from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv(Path.home() / '.hermes' / '.env')
-sys.path.insert(0, '{HERMES_AGENT_ROOT}')
-from run_agent import AIAgent
-config_path = '{Path.home() / ".hermes" / "config.yaml"}'
-with open(config_path) as f:
-    config = yaml.safe_load(f)
-model_cfg = config.get('model', {{}})
-ag = AIAgent(
-    model=model_cfg.get('default', 'MiniMax-M2.7'),
-    base_url=model_cfg.get('base_url', ''),
-    provider=model_cfg.get('provider', ''),
-    platform='local',
-    quiet_mode=True,
-    verbose_logging=False,
-)
-import sys as _sys
-result = ag.chat({json.dumps(content)})
-print(result, end='')
-"""
-        try:
-            proc = subprocess.run(
-                [str(VENV_PY), "-c", script],
-                capture_output=True, text=True, timeout=60
-            )
-            if proc.returncode != 0:
-                return f"[Hermes 错误] subprocess: {proc.stderr.strip()}"
-            return proc.stdout or "（无响应）"
-        except subprocess.TimeoutExpired:
-            return "[Hermes 错误] 调用超时（60秒）"
-        except Exception as exc:
-            return f"[Hermes 错误] {type(exc).__name__}: {exc}"
-
     try:
-        response_content = await asyncio.get_event_loop().run_in_executor(
-            None, _hermes_chat
+        client = await get_acp_client()
+        response = await client.send_message(
+            content=content,
+            session_id=agent_id,  # Use agent_id as session key for state reuse
+            timeout=60.0,
         )
+        response_content = response.content or "（无响应）"
+    except asyncio.TimeoutError:
+        response_content = "[Hermes 错误] ACP 调用超时（60秒）"
     except Exception as exc:
-        _log.exception("Hermes chat failed")
+        _log.exception("Hermes ACP chat failed")
         response_content = f"[Hermes 错误] {type(exc).__name__}: {exc}"
 
     return {
