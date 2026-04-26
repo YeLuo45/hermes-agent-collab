@@ -72,6 +72,63 @@ class DirectAgentClient:
         
         return env
     
+    def _build_script(self, content: str, session_id: Optional[str] = None) -> str:
+        """
+        Build the subprocess script that calls AIAgent.
+        Uses explicit string substitution to avoid f-string parsing issues.
+        """
+        hermes_root = str(self.hermes_agent_root)
+        session_str = session_id or ""
+        
+        # Build script parts manually to avoid f-string parsing issues
+        # Note: content must be json.dumps() to handle special characters
+        content_json = json.dumps(content)
+        session_str = session_id or ""
+        
+        script_parts = [
+            "import sys, os, yaml, json",
+            "from pathlib import Path",
+            "from dotenv import load_dotenv",
+            "",
+            'load_dotenv(Path.home() / ".hermes" / ".env")',
+            "",
+            'os.environ["ANTHROPIC_API_KEY"] = os.environ.get("MINIMAX_CN_API_KEY", "")',
+            "",
+            f'sys.path.insert(0, "{hermes_root}")',
+            "from run_agent import AIAgent",
+            "",
+            'config_path = Path.home() / ".hermes" / "config.yaml"',
+            "with open(config_path) as f:",
+            "    config = yaml.safe_load(f)",
+            "model_cfg = config.get('model', {})",
+            "",
+            'api_key = os.environ.get("MINIMAX_CN_API_KEY", "")',
+            "",
+            "ag = AIAgent(",
+            '    model=model_cfg.get("default", "MiniMax-M2.7"),',
+            '    base_url=model_cfg.get("base_url", ""),',
+            '    provider=model_cfg.get("provider", ""),',
+            "    api_key=api_key,",
+            '    platform="collab",',
+            "    quiet_mode=True,",
+            "    verbose_logging=False,",
+            ")",
+            "",
+            f'session_id = "{session_str}"',
+            "if session_id:",
+            "    ag.session_id = session_id",
+            "",
+            f"content = {content_json}",
+            "",
+            "try:",
+            "    result = ag.chat(content)",
+            '    print(json.dumps({"success": True, "content": result, "session_id": ag.session_id}), flush=True)',
+            "except Exception as e:",
+            '    print(json.dumps({"success": False, "error": str(e), "error_type": type(e).__name__}), flush=True)',
+        ]
+        
+        return "\n".join(script_parts)
+    
     def _run_sync(self, content: str, session_id: Optional[str] = None) -> AgentResponse:
         """
         Run AIAgent.chat() synchronously in a subprocess.
@@ -93,48 +150,7 @@ class DirectAgentClient:
         api_key = os.environ.get("MINIMAX_CN_API_KEY", "")
         
         # Build the script that calls AIAgent
-        # Must pass api_key explicitly since AIAgent doesn't auto-read MINIMAX_CN_API_KEY for minimax-cn
-        script = f"""
-import sys, os, yaml, json
-from pathlib import Path
-from dotenv import load_dotenv
-
-# Load .env
-load_dotenv(Path.home() / ".hermes" / ".env")
-
-# Set ANTHROPIC_API_KEY explicitly (what AIAgent checks for minimax-cn)
-os.environ["ANTHROPIC_API_KEY"] = os.environ.get("MINIMAX_CN_API_KEY", "")
-
-sys.path.insert(0, "{self.hermes_agent_root}")
-from run_agent import AIAgent
-
-config_path = Path.home() / ".hermes" / "config.yaml"
-with open(config_path) as f:
-    config = yaml.safe_load(f)
-model_cfg = config.get("model", {{}})
-
-api_key = os.environ.get("MINIMAX_CN_API_KEY", "")
-
-ag = AIAgent(
-    model=model_cfg.get("default", "MiniMax-M2.7"),
-    base_url=model_cfg.get("base_url", ""),
-    provider=model_cfg.get("provider", ""),
-    api_key=api_key,  # Explicitly pass the API key
-    platform="collab",
-    quiet_mode=True,
-    verbose_logging=False,
-)
-
-session_id = "{session_id or ''}"
-if session_id:
-    ag.session_id = session_id
-
-try:
-    result = ag.chat({json.dumps(content)})
-    print(json.dumps({{"success": True, "content": result, "session_id": ag.session_id}}), flush=True)
-except Exception as e:
-    print(json.dumps({{"success": False, "error": str(e), "error_type": type(e).__name__}}), flush=True)
-"""
+        script = self._build_script(content, session_id)
         
         env = self._build_env()
         proc = subprocess.run(
@@ -149,8 +165,18 @@ except Exception as e:
             _logger.error("Agent subprocess failed: %s", proc.stderr[:500])
             return AgentResponse(content=f"Agent error: {proc.stderr[:200]}")
         
+        # AIAgent may print progress logs to stdout, so we need to extract
+        # the last JSON object from the output (which is our actual response)
         try:
-            result = json.loads(proc.stdout.strip())
+            # Find the last '{' which marks the start of our JSON response
+            stdout = proc.stdout.strip()
+            last_brace_pos = stdout.rfind('{')
+            if last_brace_pos >= 0:
+                json_str = stdout[last_brace_pos:]
+                result = json.loads(json_str)
+            else:
+                result = json.loads(stdout)
+            
             if result.get("success"):
                 return AgentResponse(
                     content=result.get("content", ""),
@@ -158,7 +184,7 @@ except Exception as e:
                 )
             else:
                 return AgentResponse(content=f"Agent error: {result.get('error', 'unknown')}")
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             _logger.error("Invalid JSON from agent: %s", proc.stdout[:200])
             return AgentResponse(content=f"Agent error: invalid response: {proc.stdout[:200]}")
     
@@ -169,7 +195,7 @@ except Exception as e:
         timeout: float = 120.0,
     ) -> AgentResponse:
         """
-        Send a message to the agent and get the response.
+        Send a message to an agent and get the response.
         
         Runs the subprocess synchronously in a thread pool to avoid blocking
         the asyncio event loop.
