@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><title>Test Fetch</title></head>
+<body>
+<h1>Test Fetch API</h1>
+<button onclick="testFetch()">Test Fetch</button>
+<pre id="result"></pre>
+<script>
+async function testFetch() {
+  const result = document.getElementById('result');
+  try {
+    const response = await fetch('/api/collab/agents/a73aaa07-0fa2-4331-8bee-3105ff07e015/message', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: 'test from html'})
+    });
+    const data = await response.json();
+    result.textContent = JSON.stringify(data);
+  } catch(e) {
+    result.textContent = 'Error: ' + e.message;
+  }
+}
+</script>
+</body>
+</html>

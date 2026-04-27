@@ -765,9 +765,9 @@ async def websocket_endpoint(websocket: WebSocket):
         "type": "init",
         "payload": {
             "workspaces": [w.to_dict() for w in workspace_mgr.list_workspaces()],
-            "agents": [],
-            "tasks": [],
-            "skills": []
+            "agents": [a.to_dict() for a in _agent_registry().list_agents()],
+            "tasks": [t.to_dict() for t in _task_manager().list_tasks()],
+            "skills": [s.to_dict() for s in _skill_system().list_skills()]
         }
     })
     
