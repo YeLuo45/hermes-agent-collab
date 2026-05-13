@@ -63,7 +63,33 @@ def temp_workspace():
 def om_integration(temp_workspace):
     """Build an OrchestrationManager with mocked AIAgent for integration testing."""
     ws_path, ws_id = temp_workspace
-    with patch("collaboration.orchestration_manager._call_aia_agent", mock_aia_agent):
+
+    # Inject mock via module-level _call_aia_agent_impl reference
+    from collaboration import orchestration_manager as om_module
+
+    MOCK_DECOMPOSE_LOCAL = (
+        '{"sub_tasks": ['
+        '{"title": "任务一", "description": "执行任务一", "dependencies": []},'
+        '{"title": "任务二", "description": "执行任务二", "dependencies": ["任务一"]},'
+        '{"title": "任务三", "description": "执行任务三", "dependencies": ["任务一"]}'
+        '],'
+        '"execution_plan": "先执行任务一，再并行执行二和三",'
+        '"context": {"优先级": "高"}}'
+    )
+    MOCK_SPECIALIST_LOCAL = '{"result": "任务执行完成"}'
+    MOCK_CRITIC_ACCEPT_LOCAL = '{"score": 8.0, "comments": "质量良好", "decision": "accept"}'
+
+    def mock_impl(prompt: str) -> str:
+        if "sub_tasks" in prompt or "分解" in prompt:
+            return MOCK_DECOMPOSE_LOCAL
+        elif "评分" in prompt or "score" in prompt.lower():
+            return MOCK_CRITIC_ACCEPT_LOCAL
+        return MOCK_SPECIALIST_LOCAL
+
+    original_impl = om_module._call_aia_agent_impl
+    om_module._call_aia_agent_impl = mock_impl
+
+    try:
         with patch("collaboration.orchestration_manager.ensure_workspace_files", return_value=ws_path):
             from collaboration.orchestration_manager import OrchestrationManager
             from collaboration.models import TaskOrchestration, SubTask, CriticReview
@@ -78,6 +104,8 @@ def om_integration(temp_workspace):
             manager._subtask_store = subtask_store
             manager._review_store = review_store
             yield manager
+    finally:
+        om_module._call_aia_agent_impl = original_impl
 
 
 # ─── Integration Test 1: Coordinator → Specialist → Critic (full pipeline) ───

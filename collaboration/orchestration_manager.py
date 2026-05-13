@@ -26,14 +26,62 @@ MAX_CONCURRENT_SPECIALISTS = 3
 CRITIC_THRESHOLD = 6.0
 MAX_RETRY = 2
 AIAgent_TIMEOUT = 120  # seconds
+CIRCUIT_BREAKER_THRESHOLD = 3  # consecutive failures before agent is skipped
+CIRCUIT_BREAKER_COOLDOWN = 300  # seconds before circuit resets
+
+# Per-agent circuit breaker registry: agent_id -> {"failures": int, "tripped_at": float|None}
+_agent_circuit_breakers: dict[str, dict] = {}
+_breaker_lock = __import__("threading").Lock()
+
+
+def _is_agent_circuit_open(agent_id: str) -> bool:
+    """Return True if agent circuit is open (too many consecutive failures)."""
+    if agent_id == "default" or not agent_id:
+        return False
+    with _breaker_lock:
+        state = _agent_circuit_breakers.get(agent_id)
+        if not state:
+            return False
+        if state.get("tripped_at") is None:
+            return False
+        import time
+        if time.time() - state["tripped_at"] > CIRCUIT_BREAKER_COOLDOWN:
+            # Auto-reset after cooldown
+            state["failures"] = 0
+            state["tripped_at"] = None
+            return False
+        return True
+
+
+def _record_agent_failure(agent_id: str):
+    """Record a failure for circuit breaker. Trips the circuit after threshold."""
+    if agent_id == "default" or not agent_id:
+        return
+    with _breaker_lock:
+        state = _agent_circuit_breakers.setdefault(agent_id, {"failures": 0, "tripped_at": None})
+        state["failures"] += 1
+        if state["failures"] >= CIRCUIT_BREAKER_THRESHOLD:
+            state["tripped_at"] = __import__("time").time()
+            _log.warning("Circuit breaker tripped for agent %s after %d failures", agent_id, state["failures"])
+
+
+def _record_agent_success(agent_id: str):
+    """Reset failure counter on success."""
+    if agent_id == "default" or not agent_id:
+        return
+    with _breaker_lock:
+        state = _agent_circuit_breakers.get(agent_id)
+        if state:
+            state["failures"] = 0
+            state["tripped_at"] = None
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _call_aia_agent(prompt: str) -> str:
-    """Call AIAgent via subprocess with MINIMAX_CN_API_KEY → ANTHROPIC_API_KEY."""
+def _default_aia_agent_impl(prompt: str) -> str:
+    """The actual AIAgent subprocess call. Extracted for test injection."""
     import subprocess, os, sys
     from pathlib import Path
     from dotenv import load_dotenv
@@ -65,6 +113,15 @@ print(ag.chat('''{escaped_prompt}'''), flush=True)
         return json.dumps({"error": "AIAgent call timed out after 120s"})
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+# Override this in tests to inject mock behaviour
+_call_aia_agent_impl = _default_aia_agent_impl
+
+
+def _call_aia_agent(prompt: str) -> str:
+    """Call AIAgent via subprocess. Delegates to _call_aia_agent_impl for test injection."""
+    return _call_aia_agent_impl(prompt)
 
 
 def _parse_json_response(response: str) -> dict:
@@ -266,7 +323,23 @@ class OrchestrationManager:
     # ─── Specialist — 并行执行 ──────────────────────────────────────────────
 
     def _execute_single_subtask(self, sub_task: SubTask, agent_id: str) -> SubTask:
-        """Execute one SubTask: mark in_progress → AIAgent → mark completed."""
+        """Execute one SubTask: check circuit → AIAgent → mark completed / handle timeout."""
+        # Circuit breaker check
+        if _is_agent_circuit_open(agent_id):
+            sub_task.status = TaskStatus.FAILED
+            sub_task.result = f"Agent {agent_id} circuit breaker open (consecutive failures)"
+            sub_task.updated_at = _now_iso()
+            self._subtask_store.upsert(sub_task.to_dict())
+            self._emit("subtask.starting", {
+                "sub_task_id": sub_task.sub_task_id,
+                "title": sub_task.title,
+                "assigned_agent_id": agent_id,
+                "skipped": True,
+                "reason": "circuit_breaker_open",
+            })
+            self._emit("subtask.started", sub_task.to_dict())
+            return sub_task
+
         sub_task.status = TaskStatus.IN_PROGRESS
         sub_task.assigned_agent_id = agent_id
         sub_task.updated_at = _now_iso()
@@ -291,7 +364,32 @@ class OrchestrationManager:
 
 直接输出执行结果（简洁，不要 markdown）。"""
 
-        result = _call_aia_agent(prompt)
+        try:
+            result = _call_aia_agent(prompt)
+        except Exception as e:
+            _record_agent_failure(agent_id)
+            sub_task.result = f"Agent call error: {str(e)}"
+            sub_task.status = TaskStatus.FAILED
+            sub_task.updated_at = _now_iso()
+            self._subtask_store.upsert(sub_task.to_dict())
+            self._emit("subtask.completed", sub_task.to_dict())
+            return sub_task
+
+        # Check for timeout / error in response
+        try:
+            result_data = json.loads(result)
+            if "error" in result_data or "timed out" in result.lower():
+                _record_agent_failure(agent_id)
+                sub_task.result = result
+                sub_task.status = TaskStatus.FAILED
+                sub_task.updated_at = _now_iso()
+                self._subtask_store.upsert(sub_task.to_dict())
+                self._emit("subtask.completed", sub_task.to_dict())
+                return sub_task
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        _record_agent_success(agent_id)
         sub_task.result = result
         sub_task.status = TaskStatus.COMPLETED
         sub_task.updated_at = _now_iso()
@@ -500,7 +598,14 @@ class OrchestrationManager:
         while iteration < max_iterations:
             iteration += 1
 
-            # Run specialists (handles Critic internally) — only READY tasks execute
+            # Re-evaluate BLOCKED tasks — their dependencies may have completed in the last iteration
+            for st in self.get_orchestration_subtasks(orch_id):
+                if st.status == TaskStatus.BLOCKED:
+                    st.status = TaskStatus.PENDING
+                    st.updated_at = _now_iso()
+                    self._subtask_store.upsert(st.to_dict())
+
+            # Run specialists — only READY (PENDING with all deps met) tasks execute
             self.run_specialists_parallel(orch_id, agent_pool)
 
             # Re-read subtask states after this iteration
@@ -512,14 +617,16 @@ class OrchestrationManager:
             if not non_terminal:
                 break
 
-            # Detect circular dependency deadlock: all remaining are BLOCKED
-            if all(st.status == TaskStatus.BLOCKED for st in non_terminal):
-                _log.warning("Circular dependency detected in orchestration %s", orch_id)
-                for st in non_terminal:
-                    st.status = TaskStatus.FAILED
-                    st.result = "Circular dependency: no eligible tasks remain"
-                    st.updated_at = _now_iso()
-                    self._subtask_store.upsert(st.to_dict())
+            # No PENDING tasks but some are still BLOCKED — this is a true circular dependency
+            if not any(st.status == TaskStatus.PENDING for st in non_terminal):
+                blocked = [st for st in non_terminal if st.status == TaskStatus.BLOCKED]
+                if blocked:
+                    _log.warning("Circular dependency detected in orchestration %s", orch_id)
+                    for st in blocked:
+                        st.status = TaskStatus.FAILED
+                        st.result = "Circular dependency: no eligible tasks remain"
+                        st.updated_at = _now_iso()
+                        self._subtask_store.upsert(st.to_dict())
                 break
 
             # Small pause between iterations to allow completed results to propagate
