@@ -97,6 +97,7 @@ class OrchestrationManager:
             orchestration_id=orch_id,
             root_task_id=root_task_id,
             coordinator_id=coordinator_id,
+            user_task_description=user_task_description,
             phase=OrchestrationPhase.PLANNING,
             sub_task_ids=[],
             context_pool={"user_requirements": user_task_description},
