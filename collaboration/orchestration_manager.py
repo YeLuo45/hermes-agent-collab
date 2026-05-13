@@ -268,6 +268,11 @@ class OrchestrationManager:
         sub_task.assigned_agent_id = agent_id
         sub_task.updated_at = _now_iso()
         self._subtask_store.upsert(sub_task.to_dict())
+        self._emit("subtask.starting", {
+            "sub_task_id": sub_task.sub_task_id,
+            "title": sub_task.title,
+            "assigned_agent_id": agent_id,
+        })
         self._emit("subtask.started", sub_task.to_dict())
 
         orch = self.get_orchestration(sub_task.parent_orchestration_id)

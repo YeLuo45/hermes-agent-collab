@@ -36,6 +36,7 @@ class EventType(str, Enum):
     ORCHESTRATION_USER_CONFIRMED = "orchestration.user_confirmed"
     ORCHESTRATION_COMPLETED = "orchestration.completed"
     ORCHESTRATION_FAILED = "orchestration.failed"
+    SUBTASK_STARTING = "subtask.starting"
     SUBTASK_STARTED = "subtask.started"
     SUBTASK_COMPLETED = "subtask.completed"
     SUBTASK_REJECTED = "subtask.rejected"

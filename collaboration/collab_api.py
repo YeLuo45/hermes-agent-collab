@@ -693,6 +693,67 @@ async def get_orchestration_report(orch_id: str):
     return {"report": report}
 
 
+@router.get("/orchestrations/{orch_id}/stream")
+async def stream_orchestration(orch_id: str):
+    """SSE stream of real-time orchestration events for a specific orchestration.
+
+    Streams: subtask.starting, subtask.started, subtask.completed,
+    subtask.rejected, subtask.retry, review.created,
+    orchestration.completed, orchestration.failed.
+    """
+    import asyncio
+    from fastapi.responses import StreamingResponse
+
+    async def event_generator():
+        bus = get_event_bus()
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        # Filter for orchestration-specific events
+        ORCH_EVENTS = {
+            "subtask.starting", "subtask.started", "subtask.completed",
+            "subtask.rejected", "subtask.retry", "review.created",
+            "orchestration.completed", "orchestration.failed",
+        }
+
+        async def on_event(event: "Event"):
+            if event.payload.get("orchestration_id") == orch_id:
+                await queue.put(event.to_dict())
+            elif event.event_type.value.startswith("subtask."):
+                # Check if this subtask belongs to this orchestration
+                st_orch_id = event.payload.get("parent_orchestration_id")
+                if st_orch_id == orch_id:
+                    await queue.put(event.to_dict())
+
+        await bus.subscribe(on_event, workspace_id=None)
+
+        # Send heartbeat every 15s to keep connection alive
+        last_heartbeat = 0
+
+        try:
+            while True:
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                    last_heartbeat = 0
+                except asyncio.TimeoutError:
+                    last_heartbeat += 15
+                    if last_heartbeat >= 60:
+                        break
+                    yield f": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # =============================================================================
 # Monitoring Endpoints
 # =============================================================================
