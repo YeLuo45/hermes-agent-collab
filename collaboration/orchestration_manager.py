@@ -110,7 +110,8 @@ class OrchestrationManager:
 
     def get_orchestration(self, orch_id: str) -> Optional[TaskOrchestration]:
         data = self._orch_store.get(orch_id)
-        return TaskOrchestration.from_dict(data) if data else None
+        # JsonFileStore.get() already deserializes; from_dict would fail on an already-deserialized object
+        return data if data else None
 
     def list_orchestrations(self) -> list[TaskOrchestration]:
         return self._orch_store.list()
@@ -321,7 +322,8 @@ class OrchestrationManager:
 
     def get_subtask(self, sub_task_id: str) -> Optional[SubTask]:
         data = self._subtask_store.get(sub_task_id)
-        return SubTask.from_dict(data) if data else None
+        # JsonFileStore.get() already deserializes
+        return data if data else None
 
     def get_orchestration_subtasks(self, orch_id: str) -> list[SubTask]:
         return [

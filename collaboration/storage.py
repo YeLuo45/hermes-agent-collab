@@ -87,6 +87,18 @@ class JsonFileStore:
     def upsert(self, entity: T) -> T:
         """Insert or replace an entity. Returns the same entity."""
         key_field = self._key_field()
+        # Accept both model instances and plain dicts — always store as dict
+        if isinstance(entity, dict):
+            key = entity.get(key_field)
+            data = self._read_raw()
+            for i, d in enumerate(data):
+                if d.get(key_field) == key:
+                    data[i] = entity
+                    self._write_raw(data)
+                    return entity
+            data.append(entity)
+            self._write_raw(data)
+            return entity
         key = getattr(entity, key_field)
         data = self._read_raw()
         for i, d in enumerate(data):
@@ -115,6 +127,9 @@ class JsonFileStore:
             "Agent": "agent_id",
             "Skill": "skill_id",
             "Workspace": "workspace_id",
+            "TaskOrchestration": "orchestration_id",
+            "SubTask": "sub_task_id",
+            "CriticReview": "review_id",
         }
         name = self._model_type.__name__
         field = mapping.get(name)
