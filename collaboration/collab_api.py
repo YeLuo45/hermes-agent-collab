@@ -769,6 +769,28 @@ async def cancel_orchestration(orch_id: str):
     return orch.to_dict()
 
 
+@router.get("/orchestrations/{orch_id}/events")
+async def get_orchestration_events(
+    orch_id: str,
+    event_type: str | None = None,
+):
+    """Get the persisted event log for an orchestration."""
+    mgr = _get_orch_mgr()
+    types = [event_type] if event_type else None
+    events = mgr.get_orchestration_events(orch_id, event_types=types)
+    return {"orchestration_id": orch_id, "count": len(events), "events": events}
+
+
+@router.get("/orchestrations/{orch_id}/replay")
+async def get_replay(orch_id: str):
+    """Get full replay: state snapshot + ordered steps."""
+    mgr = _get_orch_mgr()
+    result = mgr.replay_orchestration(orch_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
 # =============================================================================
 # Monitoring Endpoints
 # =============================================================================

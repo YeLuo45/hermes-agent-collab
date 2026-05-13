@@ -17,7 +17,7 @@ from collaboration.models import (
     TaskOrchestration, SubTask, CriticReview,
     OrchestrationPhase, ReviewDecision, TaskStatus,
 )
-from collaboration.storage import for_orchestrations, for_subtasks, for_reviews, ensure_workspace_files
+from collaboration.storage import for_orchestrations, for_subtasks, for_reviews, for_events, ensure_workspace_files
 from collaboration.events import Event, EventType, get_event_bus
 
 _log = logging.getLogger(__name__)
@@ -142,7 +142,11 @@ class OrchestrationManager:
         self._orch_store = for_orchestrations(ws_path)
         self._subtask_store = for_subtasks(ws_path)
         self._review_store = for_reviews(ws_path)
+        self._event_store = for_events(ws_path)
         self._bus = get_event_bus()
+
+        # Wire event bus → persistent event store
+        self._bus.set_event_store(self._event_store.upsert)
 
     # ─── Orchestration CRUD ──────────────────────────────────────────────────
 
@@ -676,3 +680,112 @@ class OrchestrationManager:
             self.update_phase(orch_id, OrchestrationPhase.CANCELLED)
             self._emit("orchestration.cancelled", {"orchestration_id": orch_id})
             return self.get_orchestration(orch_id)
+
+    # ─── Orchestration History & Replay ──────────────────────────────────────────
+
+    def get_orchestration_events(
+        self,
+        orch_id: str,
+        event_types: list[str] | None = None,
+    ) -> list[dict]:
+        """Return the persisted event log for an orchestration.
+
+        Args:
+            orch_id: orchestration to get events for
+            event_types: optional filter — if provided, only matching events are returned
+
+        Returns:
+            List of event dicts in chronological order.
+        """
+        all_events = self._event_store.list()
+        matching = [
+            ev for ev in all_events
+            if ev.get("payload", {}).get("orchestration_id") == orch_id
+            or ev.get("payload", {}).get("parent_orchestration_id") == orch_id
+        ]
+        if event_types:
+            matching = [ev for ev in matching if ev.get("event") in event_types]
+        # Sort by timestamp (already ISO strings)
+        matching.sort(key=lambda ev: ev.get("timestamp", ""))
+        return matching
+
+    def get_replay_steps(self, orch_id: str) -> list[dict]:
+        """Return an ordered sequence of replay steps from an orchestration's event log.
+
+        Each step is a dict with: timestamp, phase, actor, action, details.
+        Used by replay_orchestration for deterministic state reconstruction.
+        """
+        events = self.get_orchestration_events(orch_id)
+        steps = []
+        for ev in events:
+            et = ev.get("event", "")
+            payload = ev.get("payload", {})
+            if et == "orchestration.created":
+                steps.append({"ts": ev["timestamp"], "phase": "init", "actor": "system",
+                              "action": "created", "details": payload})
+            elif et == "orchestration.plan_ready":
+                steps.append({"ts": ev["timestamp"], "phase": "planning", "actor": "coordinator",
+                              "action": "decomposed", "details": {"num_subtasks": len(payload.get("sub_task_ids", []))}})
+            elif et == "orchestration.user_confirmed":
+                steps.append({"ts": ev["timestamp"], "phase": "executing", "actor": "user",
+                              "action": "confirmed", "details": {}})
+            elif et == "subtask.starting":
+                steps.append({"ts": ev["timestamp"], "phase": "executing", "actor": payload.get("agent_id", "unknown"),
+                              "action": "starting", "details": {"subtask_id": payload.get("subtask_id"),
+                                                               "title": payload.get("title", "")}})
+            elif et == "subtask.completed":
+                steps.append({"ts": ev["timestamp"], "phase": "executing", "actor": payload.get("agent_id", "unknown"),
+                              "action": "completed", "details": {"subtask_id": payload.get("subtask_id"),
+                                                                "status": payload.get("status", ""),
+                                                                "result_preview": (payload.get("result", "")[:80] if payload.get("result") else "")}})
+            elif et == "subtask.rejected":
+                steps.append({"ts": ev["timestamp"], "phase": "review", "actor": "critic",
+                              "action": "rejected", "details": {"subtask_id": payload.get("subtask_id"),
+                                                               "score": payload.get("score", 0),
+                                                               "reason": payload.get("reason", "")}})
+            elif et == "review.created":
+                steps.append({"ts": ev["timestamp"], "phase": "review", "actor": "critic",
+                              "action": "reviewed", "details": {"score": payload.get("score", 0),
+                                                               "decision": payload.get("decision", "")}})
+            elif et == "orchestration.completed":
+                steps.append({"ts": ev["timestamp"], "phase": "done", "actor": "system",
+                              "action": "completed", "details": {}})
+            elif et == "orchestration.failed":
+                steps.append({"ts": ev["timestamp"], "phase": "done", "actor": "system",
+                              "action": "failed", "details": {"reason": payload.get("reason", "")}})
+            elif et == "orchestration.cancelled":
+                steps.append({"ts": ev["timestamp"], "phase": "done", "actor": "user",
+                              "action": "cancelled", "details": {}})
+            elif et == "subtask.cancelled":
+                steps.append({"ts": ev["timestamp"], "phase": "done", "actor": "user",
+                              "action": "cancelled", "details": {"subtask_id": payload.get("subtask_id")}})
+        return steps
+
+    def replay_orchestration(self, orch_id: str) -> dict:
+        """Reconstruct orchestration state by replaying persisted events.
+
+        Returns:
+            A state dict: {orchestration, subtasks, reviews, replay_steps}.
+        """
+        from collaboration.models import TaskOrchestration, SubTask, CriticReview
+
+        orch = self.get_orchestration(orch_id)
+        if not orch:
+            return {"error": f"Orchestration {orch_id} not found"}
+
+        # Rebuild subtask list
+        all_subtasks = self._subtask_store.list()
+        orch_subtasks = [st for st in all_subtasks
+                        if st.get("parent_orchestration_id") == orch_id
+                        or st.get("orchestration_id") == orch_id]
+
+        # Rebuild reviews
+        all_reviews = self._review_store.list()
+        orch_reviews = [r for r in all_reviews if r.get("orchestration_id") == orch_id]
+
+        return {
+            "orchestration": orch.to_dict(),
+            "subtasks": orch_subtasks,
+            "reviews": [r.to_dict() if hasattr(r, "to_dict") else r for r in orch_reviews],
+            "replay_steps": self.get_replay_steps(orch_id),
+        }

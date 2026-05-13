@@ -98,10 +98,15 @@ class EventBus:
         self._subscribers: list[tuple[Any, ...]] = []
         self._lock = asyncio.Lock()
         self._ws_broadcast: Callable | None = None
+        self._event_store_writer: Callable[[dict], None] | None = None
 
     def set_ws_broadcast(self, func: Callable):
         """Set a callback for WebSocket broadcasting of events."""
         self._ws_broadcast = func
+
+    def set_event_store(self, writer: Callable[[dict], None]):
+        """Set a callback for persisting events to storage."""
+        self._event_store_writer = writer
 
     async def subscribe(
         self,
@@ -144,6 +149,13 @@ class EventBus:
 
     async def emit(self, event: Event):
         """Publish an event to all matching subscribers."""
+        # Persist to event store if configured
+        if self._event_store_writer:
+            try:
+                self._event_store_writer(event.to_dict())
+            except Exception:
+                _log.exception("Event store writer raised: %s", self._event_store_writer)
+
         # WebSocket broadcast if configured
         if self._ws_broadcast:
             try:
@@ -176,6 +188,12 @@ class EventBus:
 
     def emit_sync(self, event: Event):
         """Synchronous emit for non-async contexts (creates a new event loop if needed)."""
+        # Persist synchronously if store writer is set
+        if self._event_store_writer:
+            try:
+                self._event_store_writer(event.to_dict())
+            except Exception:
+                _log.exception("Event store writer raised (sync): %s", self._event_store_writer)
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self.emit(event))

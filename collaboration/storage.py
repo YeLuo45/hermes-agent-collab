@@ -181,7 +181,7 @@ def ensure_workspace_files(workspace_id: str) -> Path:
     ws_path = get_workspace_path(workspace_id)
     ws_path.mkdir(parents=True, exist_ok=True)
     for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json",
-                    "orchestrations.json", "subtasks.json", "reviews.json"]:
+                    "orchestrations.json", "subtasks.json", "reviews.json", "events.json"]:
         fp = ws_path / filename
         if not fp.exists():
             fp.write_text("[]" if filename != "config.json" else "{}")
@@ -224,3 +224,8 @@ def for_reviews(ws_path: Path) -> JsonFileStore:
     """JsonFileStore for reviews.json."""
     from collaboration.models import CriticReview
     return JsonFileStore(ws_path / "reviews.json", CriticReview)
+
+
+def for_events(ws_path: Path) -> JsonFileStore:
+    """JsonFileStore for events.json (stores all emitted events for replay)."""
+    return JsonFileStore(ws_path / "events.json", dict)  # events stored as plain dicts
