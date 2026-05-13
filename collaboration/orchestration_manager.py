@@ -185,6 +185,39 @@ class OrchestrationManager:
         })
         return sub_tasks
 
+    # ─── Specialist 智能路由 ────────────────────────────────────────────────
+
+    def _route_to_agent(self, sub_task: SubTask, available_agents: list["Agent"]) -> str:
+        """Route a SubTask to the best-matching Agent based on capability keyword overlap.
+
+        Scoring:
+        - Exact capability keyword match in description → +2 per match
+        - Partial (substring) match in description → +1 per match
+        - Exact match in title → +3 bonus
+        Returns agent_id with highest score, or 'default' if no agents provided.
+        """
+        if not available_agents:
+            return "default"
+
+        desc_lower = sub_task.description.lower()
+        title_lower = sub_task.title.lower()
+        best_agent_id = available_agents[0].agent_id
+        best_score = -1
+
+        for agent in available_agents:
+            score = 0
+            for cap in agent.capabilities:
+                cap_lower = cap.lower()
+                if cap_lower in desc_lower:
+                    score += 2
+                if cap_lower in title_lower:
+                    score += 3
+            if score > best_score:
+                best_score = score
+                best_agent_id = agent.agent_id
+
+        return best_agent_id
+
     # ─── Specialist — 并行执行 ──────────────────────────────────────────────
 
     def _execute_single_subtask(self, sub_task: SubTask, agent_id: str) -> SubTask:
@@ -217,7 +250,12 @@ class OrchestrationManager:
         return sub_task
 
     def run_specialists_parallel(self, orch_id: str, agent_pool: list[str]):
-        """Run all pending SubTasks in parallel, honouring MAX_CONCURRENT_SPECIALISTS."""
+        """Run all pending SubTasks in parallel, honouring MAX_CONCURRENT_SPECIALISTS.
+
+        Uses capability-based routing to assign the best-matching Agent to each SubTask.
+        """
+        from collaboration.agent_registry import AgentRegistry
+
         orch = self.get_orchestration(orch_id)
         if not orch:
             return
@@ -241,11 +279,17 @@ class OrchestrationManager:
         for st in pending:
             (ready if can_run(st) else not_ready).append(st)
 
+        # Load full Agent objects for capability routing
+        registry = AgentRegistry(self.workspace_id)
+        agents = [registry.get(aid) for aid in agent_pool if registry.get(aid)]
+        available_agents = [a for a in agents if a is not None]
+
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SPECIALISTS) as executor:
             futures = {}
             for st in ready:
-                agent = agent_pool[len(futures) % len(agent_pool)] if agent_pool else "default"
-                future = executor.submit(self._execute_single_subtask, st, agent)
+                # Use capability-based routing instead of round-robin
+                agent_id = self._route_to_agent(st, available_agents) if available_agents else "default"
+                future = executor.submit(self._execute_single_subtask, st, agent_id)
                 futures[future] = st
 
             for future in as_completed(futures):

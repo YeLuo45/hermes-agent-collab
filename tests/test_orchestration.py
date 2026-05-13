@@ -409,3 +409,108 @@ class TestFullPipeline:
         assert "调研阶段" in report
         assert "specialist-1" in report
         assert "8.5" in report
+
+
+# ─── Test 10: Capability Routing ─────────────────────────────────────────────
+
+class TestCapabilityRouting:
+    """Test _route_to_agent scoring logic."""
+
+    def _make_agent(self, agent_id: str, capabilities: list[str]) -> "Agent":
+        from collaboration.models import Agent, AgentRole, AgentStatus
+        return Agent(
+            agent_id=agent_id,
+            name=agent_id,
+            role=AgentRole.DEVELOPER,
+            status=AgentStatus.IDLE,
+            capabilities=capabilities,
+        )
+
+    def test_exact_capability_match_in_description(self, om):
+        """Capability keyword present in sub_task description → higher score."""
+        agents = [
+            self._make_agent("dev", ["python", "fastapi"]),
+            self._make_agent("designer", ["figma", "css"]),
+        ]
+        from collaboration.models import SubTask, TaskStatus
+        st = SubTask(
+            sub_task_id="st_1",
+            parent_orchestration_id=om.workspace_id,
+            title="实现 FastAPI 后端",
+            description="使用 Python 和 FastAPI 实现 REST API",
+            status=TaskStatus.PENDING,
+            dependencies=[],
+        )
+        result = om._route_to_agent(st, agents)
+        assert result == "dev"
+
+    def test_title_bonus_higher_than_description_match(self, om):
+        """Exact capability match in title (+3) outweighs description match (+2)."""
+        agents = [
+            self._make_agent("frontend", ["react", "css"]),
+            self._make_agent("backend", ["python", "api"]),
+        ]
+        from collaboration.models import SubTask, TaskStatus
+        # "css" appears in description for frontend agent, but "python" is in title
+        st = SubTask(
+            sub_task_id="st_2",
+            parent_orchestration_id=om.workspace_id,
+            title="Python 数据处理",
+            description="使用 CSS 进行样式开发",
+            status=TaskStatus.PENDING,
+            dependencies=[],
+        )
+        result = om._route_to_agent(st, agents)
+        assert result == "backend"
+
+    def test_no_matching_capabilities_fallback_to_first(self, om):
+        """No capability overlap → returns first agent in list."""
+        agents = [
+            self._make_agent("dev", ["golang", "kubernetes"]),
+            self._make_agent("ml", ["pytorch", "tensorflow"]),
+        ]
+        from collaboration.models import SubTask, TaskStatus
+        st = SubTask(
+            sub_task_id="st_3",
+            parent_orchestration_id=om.workspace_id,
+            title="撰写项目文档",
+            description="使用 Markdown 编写 README",
+            status=TaskStatus.PENDING,
+            dependencies=[],
+        )
+        result = om._route_to_agent(st, agents)
+        assert result == "dev"  # first agent (highest score = 0 tiebreak)
+
+    def test_empty_agent_list_returns_default(self, om):
+        """Empty available_agents → returns 'default'."""
+        from collaboration.models import SubTask, TaskStatus
+        st = SubTask(
+            sub_task_id="st_4",
+            parent_orchestration_id=om.workspace_id,
+            title="测试任务",
+            description="运行单元测试",
+            status=TaskStatus.PENDING,
+            dependencies=[],
+        )
+        result = om._route_to_agent(st, [])
+        assert result == "default"
+
+    def test_multiple_capability_matches(self, om):
+        """Agent with 2 matching capabilities beats agent with 1 match."""
+        agents = [
+            self._make_agent("fullstack", ["python", "fastapi", "react"]),
+            self._make_agent("devops", ["docker", "kubernetes"]),
+        ]
+        from collaboration.models import SubTask, TaskStatus
+        st = SubTask(
+            sub_task_id="st_5",
+            parent_orchestration_id=om.workspace_id,
+            title="部署服务",
+            description="使用 Docker 容器化和 Python FastAPI 部署微服务",
+            status=TaskStatus.PENDING,
+            dependencies=[],
+        )
+        # fullstack: python(+2) + fastapi(+2) + docker in title? no → 4
+        # devops: docker(+2) + python? no → 2
+        result = om._route_to_agent(st, agents)
+        assert result == "fullstack"
