@@ -563,6 +563,107 @@ async def get_skill_stats():
 
 
 # =============================================================================
+# Orchestration Endpoints (Multi-Agent)
+# =============================================================================
+
+try:
+    from .orchestration_manager import OrchestrationManager
+except ImportError:
+    from collaboration.orchestration_manager import OrchestrationManager
+
+
+def _get_orch_mgr(workspace_id: str | None = None) -> OrchestrationManager:
+    if workspace_id is None:
+        from collaboration.storage import get_current_workspace_id
+        workspace_id = get_current_workspace_id() or "default"
+    return OrchestrationManager(workspace_id)
+
+
+class OrchestrationCreate(BaseModel):
+    root_task_id: str
+    coordinator_id: str
+    user_task_description: str
+
+
+class OrchestrationConfirm(BaseModel):
+    agent_pool: list[str] = []  # list of agent_ids to use as specialists
+
+
+@router.post("/orchestrations")
+async def create_orchestration(data: OrchestrationCreate):
+    """Create orchestration and trigger Coordinator task decomposition."""
+    mgr = _get_orch_mgr()
+    orch = mgr.create_orchestration(
+        root_task_id=data.root_task_id,
+        coordinator_id=data.coordinator_id,
+        user_task_description=data.user_task_description,
+    )
+    # Immediately run Coordinator decomposition (synchronous, may take a few seconds)
+    import threading
+    def run_decompose():
+        try:
+            mgr.decompose_task(orch.orchestration_id)
+        except Exception as e:
+            _log.error(f"Coordinator decomposition failed: {e}")
+    threading.Thread(target=run_decompose, daemon=True).start()
+    return orch.to_dict()
+
+
+@router.get("/orchestrations")
+async def list_orchestrations():
+    """List all orchestrations."""
+    mgr = _get_orch_mgr()
+    return {"orchestrations": [o.to_dict() for o in mgr.list_orchestrations()]}
+
+
+@router.get("/orchestrations/{orch_id}")
+async def get_orchestration(orch_id: str):
+    """Get orchestration by ID."""
+    mgr = _get_orch_mgr()
+    orch = mgr.get_orchestration(orch_id)
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+    return orch.to_dict()
+
+
+@router.get("/orchestrations/{orch_id}/subtasks")
+async def get_orchestration_subtasks(orch_id: str):
+    """Get all sub-tasks for an orchestration."""
+    mgr = _get_orch_mgr()
+    subtasks = mgr.get_orchestration_subtasks(orch_id)
+    return {"subtasks": [st.to_dict() for st in subtasks]}
+
+
+@router.post("/orchestrations/{orch_id}/confirm")
+async def confirm_orchestration(orch_id: str, data: OrchestrationConfirm):
+    """User confirms decomposition plan → start parallel execution."""
+    mgr = _get_orch_mgr()
+    orch = mgr.get_orchestration(orch_id)
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+
+    # Run execution in background thread to avoid blocking
+    import threading
+    agent_pool = data.agent_pool if data.agent_pool else ["default"]
+    def run():
+        try:
+            mgr.execute_orchestration(orch_id, agent_pool)
+        except Exception as e:
+            _log.error(f"Orchestration execution failed: {e}")
+    threading.Thread(target=run, daemon=True).start()
+
+    return {"phase": "executing", "orchestration_id": orch_id}
+
+
+@router.get("/orchestrations/{orch_id}/report")
+async def get_orchestration_report(orch_id: str):
+    """Get final execution report (markdown)."""
+    mgr = _get_orch_mgr()
+    report = mgr.generate_report(orch_id)
+    return {"report": report}
+
+
+# =============================================================================
 # Monitoring Endpoints
 # =============================================================================
 

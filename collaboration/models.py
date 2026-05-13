@@ -62,6 +62,19 @@ class SkillCategory(str, Enum):
     OTHER = "other"
 
 
+class OrchestrationPhase(str, Enum):
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    REVIEWING = "reviewing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ReviewDecision(str, Enum):
+    ACCEPT = "accept"
+    REJECT = "reject"
+
+
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
 
@@ -385,4 +398,159 @@ class Workspace:
             workspace_id=str(uuid4()),
             name=name,
             description=description,
+        )
+
+
+# ─── TaskOrchestration ────────────────────────────────────────────────────────
+
+
+@dataclass
+class TaskOrchestration:
+    """Multi-agent orchestration record — coordinates Coordinator/Specialist/Critic workflow."""
+
+    orchestration_id: str
+    root_task_id: str
+    coordinator_id: str
+    phase: OrchestrationPhase | str = OrchestrationPhase.PLANNING
+    sub_task_ids: list[str] = field(default_factory=list)
+    context_pool: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "orchestration_id": self.orchestration_id,
+            "root_task_id": self.root_task_id,
+            "coordinator_id": self.coordinator_id,
+            "phase": self.phase.value if isinstance(self.phase, OrchestrationPhase) else self.phase,
+            "sub_task_ids": self.sub_task_ids,
+            "context_pool": self.context_pool,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TaskOrchestration":
+        phase = data.get("phase", "planning")
+        if isinstance(phase, str):
+            try:
+                phase = OrchestrationPhase(phase)
+            except ValueError:
+                phase = OrchestrationPhase.PLANNING
+        return cls(
+            orchestration_id=data["orchestration_id"],
+            root_task_id=data["root_task_id"],
+            coordinator_id=data["coordinator_id"],
+            phase=phase,
+            sub_task_ids=data.get("sub_task_ids", []),
+            context_pool=data.get("context_pool", {}),
+            created_at=data.get("created_at", _now_iso()),
+            updated_at=data.get("updated_at", _now_iso()),
+        )
+
+
+# ─── SubTask ──────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class SubTask:
+    """A decomposed sub-task produced by the Coordinator for Specialist execution."""
+
+    sub_task_id: str
+    parent_orchestration_id: str
+    title: str
+    description: str
+    assigned_agent_id: str | None = None
+    status: TaskStatus | str = TaskStatus.PENDING
+    dependencies: list[str] = field(default_factory=list)
+    result: str | None = None
+    retry_count: int = 0
+    created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        status = self.status.value if isinstance(self.status, TaskStatus) else self.status
+        return {
+            "sub_task_id": self.sub_task_id,
+            "parent_orchestration_id": self.parent_orchestration_id,
+            "title": self.title,
+            "description": self.description,
+            "assigned_agent_id": self.assigned_agent_id,
+            "status": status,
+            "dependencies": self.dependencies,
+            "result": self.result,
+            "retry_count": self.retry_count,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SubTask":
+        status = data.get("status", "pending")
+        if isinstance(status, str):
+            try:
+                status = TaskStatus(status)
+            except ValueError:
+                status = TaskStatus.PENDING
+        return cls(
+            sub_task_id=data["sub_task_id"],
+            parent_orchestration_id=data["parent_orchestration_id"],
+            title=data["title"],
+            description=data["description"],
+            assigned_agent_id=data.get("assigned_agent_id"),
+            status=status,
+            dependencies=data.get("dependencies", []),
+            result=data.get("result"),
+            retry_count=data.get("retry_count", 0),
+            created_at=data.get("created_at", _now_iso()),
+            updated_at=data.get("updated_at", _now_iso()),
+        )
+
+
+# ─── CriticReview ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class CriticReview:
+    """Critic agent's quality review of a completed SubTask."""
+
+    review_id: str
+    orchestration_id: str
+    sub_task_id: str
+    critic_agent_id: str
+    score: float
+    comments: str
+    decision: ReviewDecision | str = ReviewDecision.ACCEPT
+    created_at: str = field(default_factory=_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        decision = self.decision.value if isinstance(self.decision, ReviewDecision) else self.decision
+        return {
+            "review_id": self.review_id,
+            "orchestration_id": self.orchestration_id,
+            "sub_task_id": self.sub_task_id,
+            "critic_agent_id": self.critic_agent_id,
+            "score": self.score,
+            "comments": self.comments,
+            "decision": decision,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CriticReview":
+        decision = data.get("decision", "accept")
+        if isinstance(decision, str):
+            try:
+                decision = ReviewDecision(decision)
+            except ValueError:
+                decision = ReviewDecision.ACCEPT
+        return cls(
+            review_id=data["review_id"],
+            orchestration_id=data["orchestration_id"],
+            sub_task_id=data["sub_task_id"],
+            critic_agent_id=data["critic_agent_id"],
+            score=data["score"],
+            comments=data["comments"],
+            decision=decision,
+            created_at=data.get("created_at", _now_iso()),
         )

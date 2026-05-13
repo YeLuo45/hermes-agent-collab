@@ -165,7 +165,8 @@ def ensure_workspace_files(workspace_id: str) -> Path:
     """
     ws_path = get_workspace_path(workspace_id)
     ws_path.mkdir(parents=True, exist_ok=True)
-    for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json"]:
+    for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json",
+                    "orchestrations.json", "subtasks.json", "reviews.json"]:
         fp = ws_path / filename
         if not fp.exists():
             fp.write_text("[]" if filename != "config.json" else "{}")
@@ -190,3 +191,21 @@ def set_current_workspace_id(workspace_id: str | None) -> None:
             CURRENT_WS_FILE.unlink()
     else:
         CURRENT_WS_FILE.write_text(workspace_id, encoding="utf-8")
+
+
+def for_orchestrations(ws_path: Path) -> JsonFileStore:
+    """JsonFileStore for orchestrations.json."""
+    from collaboration.models import TaskOrchestration
+    return JsonFileStore(ws_path / "orchestrations.json", TaskOrchestration)
+
+
+def for_subtasks(ws_path: Path) -> JsonFileStore:
+    """JsonFileStore for subtasks.json."""
+    from collaboration.models import SubTask
+    return JsonFileStore(ws_path / "subtasks.json", SubTask)
+
+
+def for_reviews(ws_path: Path) -> JsonFileStore:
+    """JsonFileStore for reviews.json."""
+    from collaboration.models import CriticReview
+    return JsonFileStore(ws_path / "reviews.json", CriticReview)
