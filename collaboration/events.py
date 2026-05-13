@@ -30,6 +30,18 @@ class EventType(str, Enum):
     # Skill events
     SKILL_CREATED = "skill.created"
     SKILL_UPDATED = "skill.updated"
+    # Orchestration events
+    ORCHESTRATION_CREATED = "orchestration.created"
+    ORCHESTRATION_PLAN_READY = "orchestration.plan_ready"
+    ORCHESTRATION_USER_CONFIRMED = "orchestration.user_confirmed"
+    ORCHESTRATION_COMPLETED = "orchestration.completed"
+    ORCHESTRATION_FAILED = "orchestration.failed"
+    SUBTASK_STARTING = "subtask.starting"
+    SUBTASK_STARTED = "subtask.started"
+    SUBTASK_COMPLETED = "subtask.completed"
+    SUBTASK_REJECTED = "subtask.rejected"
+    SUBTASK_RETRY = "subtask.retry"
+    REVIEW_CREATED = "review.created"
 
 
 class Event:

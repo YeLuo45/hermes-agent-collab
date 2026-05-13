@@ -120,6 +120,36 @@
     .error { background: #7f1d1d; border: 1px solid #ef4444; color: #f87171; padding: 0.75rem; border-radius: 0.5rem; margin-bottom: 1rem; font-size: 0.8rem; }
     .loading { text-align: center; padding: 2rem; color: var(--muted); }
 
+    /* Orchestration panel */
+    .orch-panel { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
+    .orch-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+    .orch-title { font-weight: 600; font-size: 0.9rem; }
+    .orch-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; }
+    .orch-desc { font-size: 0.8rem; color: var(--text); margin: 0.5rem 0; }
+    .orch-progress { display: flex; gap: 0.25rem; align-items: center; margin: 0.5rem 0; }
+    .orch-phase-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+    .orch-phase-dot.active { background: var(--accent); }
+    .orch-phase-dot.done { background: var(--success); }
+    .orch-phase-dot.current { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+    .subtask-list { margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+    .subtask-item { display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.4rem 0; border-bottom: 1px solid var(--bg); font-size: 0.8rem; }
+    .subtask-item:last-child { border-bottom: none; }
+    .confirm-bar { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; padding: 0.75rem; background: #1e3a2f; border: 1px solid var(--success); border-radius: 0.5rem; }
+    .confirm-bar button { background: var(--success); color: #0f172a; border: none; padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; font-weight: 600; }
+    .confirm-bar button.reject { background: var(--danger); color: #fff; }
+    .orch-empty { text-align: center; padding: 2rem; color: var(--muted); }
+
+    /* Multi-agent badge */
+    .badge-orchestration { background: #4c1d95; color: #c4b5fd; }
+    .badge-planning { background: #1e3a5f; color: #60a5fa; }
+    .badge-executing { background: #3b2f1e; color: #fbbf24; }
+    .badge-reviewing { background: #1e3a2f; color: #34d399; }
+    .badge-completed { background: #14532d; color: #22c55e; }
+    .badge-failed { background: #7f1d1d; color: #f87171; }
+    .badge-pending { background: #1e3a5f; color: #60a5fa; }
+    .badge-in_progress { background: #1e40af; color: #60a5fa; }
+    .badge-rejected { background: #7f1d1d; color: #f87171; }
+
     /* Responsive */
     @media (max-width: 640px) {
       .container { padding: 0.5rem; }
@@ -163,6 +193,7 @@
     <div class="tab" onclick="showTab('skills')">技能</div>
     <div class="tab" onclick="showTab('create')">创建</div>
     <div class="tab" onclick="showTab('chat')">💬 对话</div>
+    <div class="tab" onclick="showTab('orch')">🎯 编排</div>
   </div>
 
   <div id="tabContent"></div>
@@ -455,6 +486,7 @@ function showTab(name) {
   else if (name === 'skills') loadSkills();
   else if (name === 'create') renderCreateForm();
   else if (name === 'chat') renderChatTab();
+  else if (name === 'orch') renderOrchTab();
 }
 
 // ---- Create Form (enhanced with agent selector) ----
@@ -480,6 +512,10 @@ async function renderCreateForm() {
         <option value="high">高优先级</option>
         <option value="critical">紧急</option>
       </select>
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem">
+        <input type="checkbox" id="taskMultiAgent" style="width:auto" />
+        <label for="taskMultiAgent" style="font-size:0.8rem;color:var(--muted);cursor:pointer">🎯 多Agent编排模式（Coordinator → Specialist → Critic）</label>
+      </div>
       <select id="taskAssignee">
         ${agentOptions}
       </select>
@@ -512,6 +548,7 @@ async function createTask() {
   const title = document.getElementById('taskTitle').value.trim();
   if (!title) { alert('请输入标题'); return; }
   const assigneeId = document.getElementById('taskAssignee').value;
+  const multiAgent = document.getElementById('taskMultiAgent').checked;
   try {
     const body = {
       title,
@@ -520,9 +557,22 @@ async function createTask() {
       workspace_id: currentWs
     };
     if (assigneeId) body.assignee_id = assigneeId;
-    await req('POST', '/tasks', body);
+    const task = await req('POST', '/tasks', body);
+
+    // If multi-agent mode, also create an orchestration
+    if (multiAgent) {
+      try {
+        await req('POST', '/orchestrations', {
+          root_task_id: task.task_id,
+          coordinator_id: 'coordinator-default',
+          user_task_description: body.description || body.title,
+        });
+      } catch(e2) { /* orchestration optional */ }
+    }
+
     document.getElementById('taskTitle').value = '';
     document.getElementById('taskDesc').value = '';
+    document.getElementById('taskMultiAgent').checked = false;
     showTab('tasks'); document.querySelector('[onclick*="tasks"]').classList.add('active');
     await updateStats();
   } catch(e) { showError('创建任务失败: ' + e.message); }
@@ -667,6 +717,134 @@ function openChatWith(agentId) {
   }, 50);
 }
 
+// ---- Orchestration Tab ----
+async function renderOrchTab() {
+  const tab = document.getElementById('tabContent');
+  if (!currentWs) { tab.innerHTML = '<div class="empty">请先选择工作区</div>'; return; }
+  try {
+    const [orchData, agentsData] = await Promise.all([
+      req('GET', '/orchestrations'),
+      req('GET', `/agents?workspace_id=${currentWs}`)
+    ]);
+    const orchs = orchData.orchestrations || [];
+
+    if (!orchs.length) {
+      tab.innerHTML = `
+        <div class="orch-empty">
+          <div style="font-size:2rem;margin-bottom:0.5rem">🎯</div>
+          <div>暂无编排任务</div>
+          <div style="font-size:0.75rem;margin-top:0.5rem">在「创建」tab 勾选「多Agent编排模式」发起新编排</div>
+        </div>`;
+      return;
+    }
+
+    const html = orchs.map(orch => renderOrchCard(orch)).join('');
+    tab.innerHTML = html;
+
+    // load subtasks for each orch that is planning/executing/reviewing
+    for (const orch of orchs) {
+      if (['planning','executing','reviewing'].includes(orch.phase)) {
+        loadSubtasksForOrch(orch.orchestration_id);
+      }
+    }
+  } catch(e) { tab.innerHTML = `<div class="error">加载失败: ${esc(e.message)} <button onclick="renderOrchTab()">重试</button></div>`; }
+}
+
+function renderOrchCard(orch) {
+  const phases = ['planning','executing','reviewing','completed'];
+  const phaseLabels = { planning: '分解', executing: '执行', reviewing: '审查', completed: '完成', failed: '失败' };
+  const currentIdx = phases.indexOf(orch.phase);
+  const dotsHtml = phases.map((p, i) => {
+    const cls = i < currentIdx ? 'done' : i === currentIdx ? 'current' : '';
+    return `<div class="orch-phase-dot ${cls}" title="${phaseLabels[p]}"></div>`;
+  }).join('');
+  const phase = orch.phase || 'planning';
+  const isPendingConfirm = phase === 'planning' && orch.sub_task_ids && orch.sub_task_ids.length > 0;
+  return `
+    <div class="orch-panel" id="orch-${orch.orchestration_id}">
+      <div class="orch-header">
+        <div>
+          <div class="orch-title">${esc(orch.root_task_title || '编排任务')}</div>
+          <div class="orch-meta">ID: ${orch.orchestration_id.slice(0,8)} | Phase: <span class="badge badge-${phase}">${phaseLabels[phase]||phase}</span></div>
+        </div>
+        ${phase === 'failed' ? `<span class="badge badge-failed">失败</span>` : ''}
+      </div>
+      ${orch.user_task_description ? `<div class="orch-desc">${esc(orch.user_task_description)}</div>` : ''}
+      <div class="orch-progress">
+        ${dotsHtml}
+        <span style="font-size:0.7rem;color:var(--muted);margin-left:0.25rem">${phaseLabels[phase]||phase}</span>
+      </div>
+      <div id="orch-subtasks-${orch.orchestration_id}" class="subtask-list" style="display:none"></div>
+      ${isPendingConfirm ? `
+        <div class="confirm-bar" id="confirm-bar-${orch.orchestration_id}">
+          <div style="flex:1;font-size:0.8rem">
+            分解完成 (${(orch.sub_task_ids||[]).length} 个子任务)，确认开始执行？
+          </div>
+          <button onclick="confirmOrch('${orch.orchestration_id}')">✅ 确认执行</button>
+          <button class="reject" onclick="rejectOrch('${orch.orchestration_id}')">❌ 取消</button>
+        </div>` : ''}
+      ${phase === 'completed' || phase === 'failed' ? `
+        <div style="margin-top:0.75rem">
+          <button class="tag" style="background:var(--accent);color:#0f172a;cursor:pointer" onclick="viewOrchReport('${orch.orchestration_id}')">📋 查看报告</button>
+        </div>` : ''}
+    </div>`;
+}
+
+async function loadSubtasksForOrch(orchId) {
+  try {
+    const data = await req('GET', `/orchestrations/${orchId}/subtasks`);
+    const subtasks = data.subtasks || [];
+    const container = document.getElementById(`orch-subtasks-${orchId}`);
+    if (!container || !subtasks.length) return;
+    container.style.display = 'block';
+    container.innerHTML = subtasks.map(st => {
+      const statusLabel = { pending: '待执行', in_progress: '进行中', completed: '✅ 完成', failed: '❌ 失败', rejected: '🔄 打回' };
+      return `
+        <div class="subtask-item">
+          <span class="badge badge-${st.status}" style="flex-shrink:0">${statusLabel[st.status]||st.status}</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:0.8rem">${esc(st.title)}</div>
+            ${st.description ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(st.description)}</div>` : ''}
+            ${st.result ? `<div style="font-size:0.7rem;color:var(--success);margin-top:0.2rem">📐 结果: ${esc(st.result.slice(0,80))}${st.result.length>80?'…':''}</div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) {}
+}
+
+async function confirmOrch(orchId) {
+  const agents = await req('GET', `/agents?workspace_id=${currentWs}`);
+  const agentPool = (agents || []).map(a => a.agent_id);
+  try {
+    await req('POST', `/orchestrations/${orchId}/confirm`, { agent_pool: agentPool });
+    document.getElementById(`confirm-bar-${orchId}`).style.display = 'none';
+    setTimeout(() => renderOrchTab(), 500);
+  } catch(e) { alert('确认失败: ' + e.message); }
+}
+
+async function rejectOrch(orchId) {
+  const bar = document.getElementById(`confirm-bar-${orchId}`);
+  if (bar) bar.style.display = 'none';
+  setTimeout(() => renderOrchTab(), 200);
+}
+
+async function viewOrchReport(orchId) {
+  try {
+    const report = await req('GET', `/orchestrations/${orchId}/report`);
+    const tab = document.getElementById('tabContent');
+    tab.innerHTML = `
+      <div class="card" style="max-width:800px">
+        <div class="card-header">
+          <div class="card-title">📋 执行报告</div>
+        </div>
+        <div style="font-size:0.8rem;line-height:1.6;white-space:pre-wrap;color:var(--text)">${esc(report.report || JSON.stringify(report, null, 2))}</div>
+        <div class="card-actions" style="margin-top:1rem">
+          <button class="tag" style="background:var(--accent);color:#0f172a;cursor:pointer" onclick="renderOrchTab()">← 返回编排</button>
+        </div>
+      </div>`;
+  } catch(e) { alert('加载报告失败: ' + e.message); }
+}
+
 // ---- WebSocket ----
 function connectWS() {
   if (!currentWs) return;
@@ -679,7 +857,17 @@ function connectWS() {
       document.getElementById('wsStatus').textContent = '🟢 已连接';
       document.getElementById('wsStatus').className = 'ws-status connected';
     };
-    wsConn.onmessage = (e) => { try { const d = JSON.parse(e.data); if (d.event && (d.event.includes('task') || d.event.includes('agent') || d.event.includes('skill'))) loadAll(); } catch{} };
+    wsConn.onmessage = (e) => { try {
+      const d = JSON.parse(e.data);
+      if (!d.event) return;
+      // Task/agent/skill events → reload all
+      if (d.event.includes('task') || d.event.includes('agent') || d.event.includes('skill')) { loadAll(); return; }
+      // Orchestration events → refresh orch tab
+      if (d.event.startsWith('orchestration.') || d.event.startsWith('subtask.') || d.event.startsWith('review.')) {
+        if (document.querySelector('.tab.active') && document.querySelector('.tab.active').textContent.includes('编排')) renderOrchTab();
+        return;
+      }
+    } catch{} };
     wsConn.onclose = () => {
       document.getElementById('wsStatus').textContent = '⚪ 已断开';
       document.getElementById('wsStatus').className = 'ws-status disconnected';

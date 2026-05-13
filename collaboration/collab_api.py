@@ -563,6 +563,198 @@ async def get_skill_stats():
 
 
 # =============================================================================
+# Orchestration Endpoints (Multi-Agent)
+# =============================================================================
+
+try:
+    from .orchestration_manager import OrchestrationManager
+except ImportError:
+    from collaboration.orchestration_manager import OrchestrationManager
+
+
+def _get_orch_mgr(workspace_id: str | None = None) -> OrchestrationManager:
+    if workspace_id is None:
+        from collaboration.storage import get_current_workspace_id
+        workspace_id = get_current_workspace_id() or "default"
+    return OrchestrationManager(workspace_id)
+
+
+class OrchestrationCreate(BaseModel):
+    root_task_id: str
+    coordinator_id: str
+    user_task_description: str
+    owner_id: str = "anonymous"  # User creating this orchestration
+
+
+class OrchestrationConfirm(BaseModel):
+    agent_pool: list[str] = []  # list of agent_ids to use as specialists
+    requester_id: str = "anonymous"  # Must match orchestration owner_id
+
+
+@router.post("/orchestrations")
+async def create_orchestration(data: OrchestrationCreate):
+    """Create orchestration and trigger Coordinator task decomposition.
+
+    Fails if the owner already has an active orchestration running.
+    """
+    mgr = _get_orch_mgr()
+    # Check per-owner concurrency limit
+    active = mgr.get_owner_active_orchestration(data.owner_id)
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Owner '{data.owner_id}' already has an active orchestration: {active.orchestration_id}",
+        )
+    orch = mgr.create_orchestration(
+        root_task_id=data.root_task_id,
+        coordinator_id=data.coordinator_id,
+        user_task_description=data.user_task_description,
+        owner_id=data.owner_id,
+    )
+    # Immediately run Coordinator decomposition (synchronous, may take a few seconds)
+    import threading
+    def run_decompose():
+        try:
+            mgr.decompose_task(orch.orchestration_id)
+        except Exception as e:
+            _log.error(f"Coordinator decomposition failed: {e}")
+    threading.Thread(target=run_decompose, daemon=True).start()
+    return orch.to_dict()
+
+
+@router.get("/orchestrations")
+async def list_orchestrations():
+    """List all orchestrations."""
+    mgr = _get_orch_mgr()
+    return {"orchestrations": [o.to_dict() for o in mgr.list_orchestrations()]}
+
+
+@router.get("/orchestrations/{orch_id}")
+async def get_orchestration(orch_id: str):
+    """Get orchestration by ID."""
+    mgr = _get_orch_mgr()
+    orch = mgr.get_orchestration(orch_id)
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+    return orch.to_dict()
+
+
+@router.get("/orchestrations/{orch_id}/subtasks")
+async def get_orchestration_subtasks(orch_id: str):
+    """Get all sub-tasks for an orchestration."""
+    mgr = _get_orch_mgr()
+    subtasks = mgr.get_orchestration_subtasks(orch_id)
+    return {"subtasks": [st.to_dict() for st in subtasks]}
+
+
+@router.post("/orchestrations/{orch_id}/confirm")
+async def confirm_orchestration(orch_id: str, data: OrchestrationConfirm):
+    """User confirms decomposition plan → start parallel execution.
+
+    Fails if requester_id does not match the orchestration's owner_id.
+    """
+    mgr = _get_orch_mgr()
+    orch = mgr.get_orchestration(orch_id)
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+
+    # Ownership check
+    if orch.owner_id != data.requester_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Requester '{data.requester_id}' does not own orchestration '{orch_id}'",
+        )
+
+    # Concurrency lock check (same owner can't run two at once)
+    if not mgr.acquire_orchestration_lock(orch_id, data.requester_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Requester '{data.requester_id}' already has an active orchestration running",
+        )
+
+    # Run execution in background thread to avoid blocking
+    import threading
+    agent_pool = data.agent_pool if data.agent_pool else ["default"]
+    def run():
+        try:
+            mgr.execute_orchestration(orch_id, agent_pool)
+        except Exception as e:
+            _log.error(f"Orchestration execution failed: {e}")
+    threading.Thread(target=run, daemon=True).start()
+
+    return {"phase": "executing", "orchestration_id": orch_id}
+
+
+@router.get("/orchestrations/{orch_id}/report")
+async def get_orchestration_report(orch_id: str):
+    """Get final execution report (markdown)."""
+    mgr = _get_orch_mgr()
+    report = mgr.generate_report(orch_id)
+    return {"report": report}
+
+
+@router.get("/orchestrations/{orch_id}/stream")
+async def stream_orchestration(orch_id: str):
+    """SSE stream of real-time orchestration events for a specific orchestration.
+
+    Streams: subtask.starting, subtask.started, subtask.completed,
+    subtask.rejected, subtask.retry, review.created,
+    orchestration.completed, orchestration.failed.
+    """
+    import asyncio
+    from fastapi.responses import StreamingResponse
+
+    async def event_generator():
+        bus = get_event_bus()
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        # Filter for orchestration-specific events
+        ORCH_EVENTS = {
+            "subtask.starting", "subtask.started", "subtask.completed",
+            "subtask.rejected", "subtask.retry", "review.created",
+            "orchestration.completed", "orchestration.failed",
+        }
+
+        async def on_event(event: "Event"):
+            if event.payload.get("orchestration_id") == orch_id:
+                await queue.put(event.to_dict())
+            elif event.event_type.value.startswith("subtask."):
+                # Check if this subtask belongs to this orchestration
+                st_orch_id = event.payload.get("parent_orchestration_id")
+                if st_orch_id == orch_id:
+                    await queue.put(event.to_dict())
+
+        await bus.subscribe(on_event, workspace_id=None)
+
+        # Send heartbeat every 15s to keep connection alive
+        last_heartbeat = 0
+
+        try:
+            while True:
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                    last_heartbeat = 0
+                except asyncio.TimeoutError:
+                    last_heartbeat += 15
+                    if last_heartbeat >= 60:
+                        break
+                    yield f": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# =============================================================================
 # Monitoring Endpoints
 # =============================================================================
 
