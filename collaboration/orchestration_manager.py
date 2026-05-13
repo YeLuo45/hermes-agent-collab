@@ -5,6 +5,7 @@ Coordinates task decomposition, parallel execution, quality review, and result a
 """
 
 import json
+import logging
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,6 +19,8 @@ from collaboration.models import (
 )
 from collaboration.storage import for_orchestrations, for_subtasks, for_reviews, ensure_workspace_files
 from collaboration.events import Event, EventType, get_event_bus
+
+_log = logging.getLogger(__name__)
 
 MAX_CONCURRENT_SPECIALISTS = 3
 CRITIC_THRESHOLD = 6.0
@@ -476,7 +479,13 @@ class OrchestrationManager:
     # ─── 执行入口 ──────────────────────────────────────────────────────────
 
     def execute_orchestration(self, orch_id: str, agent_pool: list[str]):
-        """Main entry point: run full Coordinator→Specialist→Critic pipeline."""
+        """Main entry point: run full Coordinator→Specialist→Critic pipeline.
+
+        Uses a retry loop to handle dependency chains: run_specialists_parallel
+        is called repeatedly until all subtasks reach a terminal state
+        (COMPLETED / FAILED / CANCELLED). BLOCKED tasks become eligible for
+        execution in subsequent iterations once their dependencies complete.
+        """
         orch = self.get_orchestration(orch_id)
         if not orch:
             return
@@ -484,13 +493,42 @@ class OrchestrationManager:
         self.update_phase(orch_id, OrchestrationPhase.EXECUTING)
         self._emit("orchestration.user_confirmed", {"orchestration_id": orch_id})
 
-        # Run specialists (handles Critic internally)
-        self.run_specialists_parallel(orch_id, agent_pool)
+        TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED}
+        max_iterations = 20  # safety guard against infinite loops
+        iteration = 0
 
-        # Check if all done
+        while iteration < max_iterations:
+            iteration += 1
+
+            # Run specialists (handles Critic internally) — only READY tasks execute
+            self.run_specialists_parallel(orch_id, agent_pool)
+
+            # Re-read subtask states after this iteration
+            subtasks = self.get_orchestration_subtasks(orch_id)
+            terminal = [st for st in subtasks if st.status in TERMINAL]
+            non_terminal = [st for st in subtasks if st.status not in TERMINAL]
+
+            # If all done or nothing left to do, exit
+            if not non_terminal:
+                break
+
+            # Detect circular dependency deadlock: all remaining are BLOCKED
+            if all(st.status == TaskStatus.BLOCKED for st in non_terminal):
+                _log.warning("Circular dependency detected in orchestration %s", orch_id)
+                for st in non_terminal:
+                    st.status = TaskStatus.FAILED
+                    st.result = "Circular dependency: no eligible tasks remain"
+                    st.updated_at = _now_iso()
+                    self._subtask_store.upsert(st.to_dict())
+                break
+
+            # Small pause between iterations to allow completed results to propagate
+            import time; time.sleep(0.1)
+
+        # Final state evaluation
         subtasks = self.get_orchestration_subtasks(orch_id)
-        all_done = all(st.status in (TaskStatus.COMPLETED, TaskStatus.FAILED) for st in subtasks)
         has_failed = any(st.status == TaskStatus.FAILED for st in subtasks)
+        all_done = all(st.status in TERMINAL for st in subtasks)
 
         if has_failed:
             self.update_phase(orch_id, OrchestrationPhase.FAILED)
