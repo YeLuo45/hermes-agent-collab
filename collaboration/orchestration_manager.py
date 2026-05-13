@@ -28,6 +28,7 @@ MAX_RETRY = 2
 AIAgent_TIMEOUT = 120  # seconds
 CIRCUIT_BREAKER_THRESHOLD = 3  # consecutive failures before agent is skipped
 CIRCUIT_BREAKER_COOLDOWN = 300  # seconds before circuit resets
+SUBTASK_TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
 
 # Per-agent circuit breaker registry: agent_id -> {"failures": int, "tripped_at": float|None}
 _agent_circuit_breakers: dict[str, dict] = {}
@@ -591,7 +592,7 @@ class OrchestrationManager:
         self.update_phase(orch_id, OrchestrationPhase.EXECUTING)
         self._emit("orchestration.user_confirmed", {"orchestration_id": orch_id})
 
-        TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED}
+        TERMINAL = SUBTASK_TERMINAL
         max_iterations = 20  # safety guard against infinite loops
         iteration = 0
 
@@ -647,3 +648,31 @@ class OrchestrationManager:
                 "orchestration_id": orch_id,
                 "report": report,
             })
+
+    def cancel_orchestration(self, orch_id: str) -> Optional[TaskOrchestration]:
+        """Cancel an in-progress orchestration.
+
+        Marks all non-terminal subtasks as CANCELLED and updates the
+        orchestration phase to CANCELLED. Thread-safe via workspace lock.
+        """
+        with self._ws_lock:
+            orch = self.get_orchestration(orch_id)
+            if not orch:
+                return None
+
+            if orch.phase in {OrchestrationPhase.COMPLETED, OrchestrationPhase.FAILED,
+                              OrchestrationPhase.CANCELLED}:
+                return orch  # Already terminal, nothing to cancel
+
+            # Cancel all non-terminal subtasks
+            for st in self.get_orchestration_subtasks(orch_id):
+                if st.status not in SUBTASK_TERMINAL:
+                    st.status = TaskStatus.CANCELLED
+                    st.result = "Cancelled by user"
+                    st.updated_at = _now_iso()
+                    self._subtask_store.upsert(st.to_dict())
+                    self._emit("subtask.cancelled", st.to_dict())
+
+            self.update_phase(orch_id, OrchestrationPhase.CANCELLED)
+            self._emit("orchestration.cancelled", {"orchestration_id": orch_id})
+            return self.get_orchestration(orch_id)

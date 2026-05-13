@@ -711,8 +711,9 @@ async def stream_orchestration(orch_id: str):
         # Filter for orchestration-specific events
         ORCH_EVENTS = {
             "subtask.starting", "subtask.started", "subtask.completed",
-            "subtask.rejected", "subtask.retry", "review.created",
-            "orchestration.completed", "orchestration.failed",
+            "subtask.rejected", "subtask.retry", "subtask.cancelled",
+            "review.created",
+            "orchestration.completed", "orchestration.failed", "orchestration.cancelled",
         }
 
         async def on_event(event: "Event"):
@@ -752,6 +753,20 @@ async def stream_orchestration(orch_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/orchestrations/{orch_id}/cancel")
+async def cancel_orchestration(orch_id: str):
+    """Cancel an in-progress orchestration.
+
+    Marks all non-terminal subtasks as CANCELLED and updates the
+    orchestration phase to CANCELLED.
+    """
+    mgr = _get_orch_mgr()
+    orch = mgr.cancel_orchestration(orch_id)
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+    return orch.to_dict()
 
 
 # =============================================================================
