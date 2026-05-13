@@ -583,20 +583,33 @@ class OrchestrationCreate(BaseModel):
     root_task_id: str
     coordinator_id: str
     user_task_description: str
+    owner_id: str = "anonymous"  # User creating this orchestration
 
 
 class OrchestrationConfirm(BaseModel):
     agent_pool: list[str] = []  # list of agent_ids to use as specialists
+    requester_id: str = "anonymous"  # Must match orchestration owner_id
 
 
 @router.post("/orchestrations")
 async def create_orchestration(data: OrchestrationCreate):
-    """Create orchestration and trigger Coordinator task decomposition."""
+    """Create orchestration and trigger Coordinator task decomposition.
+
+    Fails if the owner already has an active orchestration running.
+    """
     mgr = _get_orch_mgr()
+    # Check per-owner concurrency limit
+    active = mgr.get_owner_active_orchestration(data.owner_id)
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Owner '{data.owner_id}' already has an active orchestration: {active.orchestration_id}",
+        )
     orch = mgr.create_orchestration(
         root_task_id=data.root_task_id,
         coordinator_id=data.coordinator_id,
         user_task_description=data.user_task_description,
+        owner_id=data.owner_id,
     )
     # Immediately run Coordinator decomposition (synchronous, may take a few seconds)
     import threading
@@ -636,11 +649,28 @@ async def get_orchestration_subtasks(orch_id: str):
 
 @router.post("/orchestrations/{orch_id}/confirm")
 async def confirm_orchestration(orch_id: str, data: OrchestrationConfirm):
-    """User confirms decomposition plan → start parallel execution."""
+    """User confirms decomposition plan → start parallel execution.
+
+    Fails if requester_id does not match the orchestration's owner_id.
+    """
     mgr = _get_orch_mgr()
     orch = mgr.get_orchestration(orch_id)
     if not orch:
         raise HTTPException(status_code=404, detail="Orchestration not found")
+
+    # Ownership check
+    if orch.owner_id != data.requester_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Requester '{data.requester_id}' does not own orchestration '{orch_id}'",
+        )
+
+    # Concurrency lock check (same owner can't run two at once)
+    if not mgr.acquire_orchestration_lock(orch_id, data.requester_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Requester '{data.requester_id}' already has an active orchestration running",
+        )
 
     # Run execution in background thread to avoid blocking
     import threading

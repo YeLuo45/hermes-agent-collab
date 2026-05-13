@@ -514,3 +514,107 @@ class TestCapabilityRouting:
         # devops: docker(+2) + python? no → 2
         result = om._route_to_agent(st, agents)
         assert result == "fullstack"
+
+
+# ─── Test 11: Ownership & Concurrency ─────────────────────────────────────────
+
+class TestOwnershipAndConcurrency:
+    """Test owner_id isolation and per-owner orchestration locking."""
+
+    def test_create_orchestration_sets_owner_id(self, om):
+        """Orchestration created with explicit owner_id."""
+        orch = om.create_orchestration(
+            root_task_id="task_owner",
+            coordinator_id="coord-1",
+            user_task_description="Test task",
+            owner_id="alice",
+        )
+        assert orch.owner_id == "alice"
+
+    def test_check_ownership_returns_true_for_owner(self, om):
+        """Owner can verify their own orchestration."""
+        orch = om.create_orchestration(
+            root_task_id="task_chk",
+            coordinator_id="coord-1",
+            user_task_description="Test",
+            owner_id="bob",
+        )
+        assert om.check_ownership(orch.orchestration_id, "bob") is True
+
+    def test_check_ownership_returns_false_for_non_owner(self, om):
+        """Non-owner cannot verify ownership."""
+        orch = om.create_orchestration(
+            root_task_id="task_chk2",
+            coordinator_id="coord-1",
+            user_task_description="Test",
+            owner_id="alice",
+        )
+        assert om.check_ownership(orch.orchestration_id, "bob") is False
+
+    def test_get_owner_active_orchestration_returns_active(self, om):
+        """Active orchestration found by owner_id."""
+        orch = om.create_orchestration(
+            root_task_id="task_active",
+            coordinator_id="coord-1",
+            user_task_description="Test",
+            owner_id="alice",
+        )
+        active = om.get_owner_active_orchestration("alice")
+        assert active is not None
+        assert active.orchestration_id == orch.orchestration_id
+
+    def test_get_owner_active_orchestration_returns_none_when_completed(self, om):
+        """Completed orchestration not returned as active."""
+        from collaboration.models import OrchestrationPhase
+        orch = om.create_orchestration(
+            root_task_id="task_done",
+            coordinator_id="coord-1",
+            user_task_description="Test",
+            owner_id="alice",
+        )
+        om.update_phase(orch.orchestration_id, OrchestrationPhase.COMPLETED)
+        assert om.get_owner_active_orchestration("alice") is None
+
+    def test_acquire_lock_allows_owner_with_no_active(self, om):
+        """Lock acquired when owner has no other active orchestration."""
+        orch = om.create_orchestration(
+            root_task_id="task_lock1",
+            coordinator_id="coord-1",
+            user_task_description="Test",
+            owner_id="alice",
+        )
+        assert om.acquire_orchestration_lock(orch.orchestration_id, "alice") is True
+
+    def test_acquire_lock_blocks_same_owner_different_orch(self, om):
+        """Same owner cannot start a second active orchestration."""
+        orch1 = om.create_orchestration(
+            root_task_id="task_lock2a",
+            coordinator_id="coord-1",
+            user_task_description="First",
+            owner_id="alice",
+        )
+        orch2 = om.create_orchestration(
+            root_task_id="task_lock2b",
+            coordinator_id="coord-1",
+            user_task_description="Second",
+            owner_id="alice",
+        )
+        # orch1 already active → orch2 cannot acquire lock for same owner
+        assert om.acquire_orchestration_lock(orch2.orchestration_id, "alice") is False
+
+    def test_different_owners_can_hold_concurrent_orchestrations(self, om):
+        """Different owners are isolated — both can have active orchestrations."""
+        orch_alice = om.create_orchestration(
+            root_task_id="task_multi1",
+            coordinator_id="coord-1",
+            user_task_description="Alice task",
+            owner_id="alice",
+        )
+        orch_bob = om.create_orchestration(
+            root_task_id="task_multi2",
+            coordinator_id="coord-1",
+            user_task_description="Bob task",
+            owner_id="bob",
+        )
+        assert om.acquire_orchestration_lock(orch_alice.orchestration_id, "alice") is True
+        assert om.acquire_orchestration_lock(orch_bob.orchestration_id, "bob") is True

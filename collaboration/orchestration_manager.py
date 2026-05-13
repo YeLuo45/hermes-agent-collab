@@ -90,6 +90,7 @@ class OrchestrationManager:
         root_task_id: str,
         coordinator_id: str,
         user_task_description: str,
+        owner_id: str = "anonymous",
     ) -> TaskOrchestration:
         """Create a new orchestration and immediately trigger Coordinator decomposition."""
         orch_id = f"orch_{uuid.uuid4().hex[:12]}"
@@ -97,6 +98,7 @@ class OrchestrationManager:
             orchestration_id=orch_id,
             root_task_id=root_task_id,
             coordinator_id=coordinator_id,
+            owner_id=owner_id,
             user_task_description=user_task_description,
             phase=OrchestrationPhase.PLANNING,
             sub_task_ids=[],
@@ -107,6 +109,46 @@ class OrchestrationManager:
         self._orch_store.upsert(orch.to_dict())
         self._emit("orchestration.created", orch.to_dict())
         return orch
+
+    # ─── Ownership & Concurrency Guards ──────────────────────────────────────
+
+    def _get_active_orchestrations(self) -> list[TaskOrchestration]:
+        """Return orchestrations currently in non-terminal phase."""
+        return [
+            o for o in self._orch_store.list()
+            if o.phase not in (OrchestrationPhase.COMPLETED, OrchestrationPhase.FAILED)
+        ]
+
+    def check_ownership(self, orch_id: str, requester_id: str) -> bool:
+        """Verify the requester owns the orchestration."""
+        orch = self.get_orchestration(orch_id)
+        if not orch:
+            return False
+        return orch.owner_id == requester_id
+
+    def acquire_orchestration_lock(self, orch_id: str, requester_id: str) -> bool:
+        """Acquire exclusive lock on an orchestration for the given owner.
+
+        Returns True if lock acquired (no other active orchestration for this owner
+        is currently running). Fails if another orchestration owned by the same
+        user is already in-progress.
+        """
+        active = self._get_active_orchestrations()
+        for orch in active:
+            if orch.orchestration_id == orch_id:
+                # Own orchestration in-progress — re-entry allowed
+                continue
+            if orch.owner_id == requester_id:
+                # Same owner already has an active orchestration
+                return False
+        return True
+
+    def get_owner_active_orchestration(self, owner_id: str) -> TaskOrchestration | None:
+        """Return the currently-active orchestration for an owner, if any."""
+        for orch in self._get_active_orchestrations():
+            if orch.owner_id == owner_id:
+                return orch
+        return None
 
     def get_orchestration(self, orch_id: str) -> Optional[TaskOrchestration]:
         data = self._orch_store.get(orch_id)

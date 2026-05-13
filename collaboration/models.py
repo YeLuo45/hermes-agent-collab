@@ -411,6 +411,7 @@ class TaskOrchestration:
     orchestration_id: str
     root_task_id: str
     coordinator_id: str
+    owner_id: str = "anonymous"  # User who created this orchestration
     user_task_description: str = ""
     phase: OrchestrationPhase | str = OrchestrationPhase.PLANNING
     sub_task_ids: list[str] = field(default_factory=list)
@@ -423,6 +424,7 @@ class TaskOrchestration:
             "orchestration_id": self.orchestration_id,
             "root_task_id": self.root_task_id,
             "coordinator_id": self.coordinator_id,
+            "owner_id": self.owner_id,
             "user_task_description": self.user_task_description,
             "phase": self.phase.value if isinstance(self.phase, OrchestrationPhase) else self.phase,
             "sub_task_ids": self.sub_task_ids,
@@ -443,6 +445,7 @@ class TaskOrchestration:
             orchestration_id=data["orchestration_id"],
             root_task_id=data["root_task_id"],
             coordinator_id=data["coordinator_id"],
+            owner_id=data.get("owner_id", "anonymous"),
             user_task_description=data.get("user_task_description", ""),
             phase=phase,
             sub_task_ids=data.get("sub_task_ids", []),
