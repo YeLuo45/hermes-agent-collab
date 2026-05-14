@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, StreamingResponse
 from pydantic import BaseModel
 
 try:
@@ -964,18 +964,108 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def ws_broadcast_event(event):
-    """Broadcast event to all WebSocket clients."""
-    await manager.broadcast({
+# ─── SSE (Server-Sent Events) ────────────────────────────────────────────────
+
+class SSEManager:
+    """Manages SSE client connections for real-time event streaming."""
+
+    def __init__(self):
+        # Each client has an asyncio.Queue to deliver events
+        self._queues: dict[int, asyncio.Queue] = {}
+        self._counter = 0
+
+    def connect(self) -> tuple[int, asyncio.Queue]:
+        """Register a new SSE client. Returns (client_id, queue)."""
+        q: asyncio.Queue = asyncio.Queue()
+        cid = self._counter
+        self._counter += 1
+        self._queues[cid] = q
+        return cid, q
+
+    def disconnect(self, client_id: int):
+        """Remove a client."""
+        self._queues.pop(client_id, None)
+
+    async def broadcast(self, event: dict):
+        """Push an event to all connected clients."""
+        disconnected = []
+        for cid, q in self._queues.items():
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                disconnected.append(cid)
+        for cid in disconnected:
+            self.disconnect(cid)
+
+    async def event_generator(self, client_id: int, queue: asyncio.Queue):
+        """Yield SSE-formatted events from the client's queue."""
+        # Send initial heartbeat comment
+        yield "event: connected\ndata: {}\n\n"
+        while client_id in self._queues:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=30)
+                # Format as SSE: "event: <type>\ndata: <json>\n\n"
+                event_type = event.get("event_type", "message")
+                yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+            except asyncio.TimeoutError:
+                # Send keepalive comment
+                yield ": heartbeat\n\n"
+
+
+_sse_manager = SSEManager()
+
+
+async def sse_broadcast_event(event):
+    """Broadcast event to all SSE clients."""
+    event_dict = {
         "type": "event",
-        "event_type": event.event_type.value if hasattr(event.event_type, 'value') else event.event_type,
+        "event_type": event.event_type.value if hasattr(event.event_type, "value") else event.event_type,
         "payload": event.payload,
-        "timestamp": event.timestamp
-    })
+        "timestamp": event.timestamp,
+    }
+    await _sse_manager.broadcast(event_dict)
+
+
+async def combined_broadcast(event):
+    """Broadcast to both WebSocket and SSE clients simultaneously."""
+    await ws_broadcast_event(event)
+    await sse_broadcast_event(event)
+
+
+# Replace single broadcaster with combined (supports both WS + SSE)
+event_bus.set_ws_broadcast(combined_broadcast)
 
 
 # Set up event bus to broadcast via WebSocket
 event_bus.set_ws_broadcast(ws_broadcast_event)
+
+
+@router.get("/sse")
+async def sse_endpoint():
+    """SSE (Server-Sent Events) endpoint for real-time collaboration updates.
+
+    Clients receive events as SSE stream. Each event has a named event type
+    (e.g. 'orchestration.started', 'subtask.completed') so the client can
+    listen for specific event types via EventSource.
+
+    Alternative to WebSocket with simpler browser integration.
+    """
+    cid, queue = _sse_manager.connect()
+
+    async def event_stream():
+        async for message in _sse_manager.event_generator(cid, queue):
+            yield message
+        _sse_manager.disconnect(cid)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.websocket("/ws")
