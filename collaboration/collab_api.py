@@ -811,6 +811,74 @@ async def get_replay(orch_id: str):
 
 
 # =============================================================================
+# Template Endpoints
+# =============================================================================
+
+@router.post("/orchestrations/{orch_id}/save-as-template")
+async def save_as_template(orch_id: str):
+    """Save a completed orchestration as a reusable template."""
+    mgr = _get_orch_mgr()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = body.get("name", f"template-{orch_id[:8]}")
+    description = body.get("description", "")
+    tags = body.get("tags", [])
+    result = mgr.save_orchestration_as_template(orch_id, name, description, tags)
+    if not result:
+        raise HTTPException(status_code=404, detail="Orchestration not found or not completed")
+    return result.to_dict()
+
+
+@router.get("/templates")
+async def list_templates(tag: str | None = None):
+    """List all saved templates, optionally filtered by tag."""
+    mgr = _get_orch_mgr()
+    return {"templates": mgr.list_templates(tag=tag)}
+
+
+@router.get("/templates/{template_id}")
+async def get_template(template_id: str):
+    """Get a template by ID."""
+    mgr = _get_orch_mgr()
+    tpl = mgr.get_template(template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tpl
+
+
+@router.delete("/templates/{template_id}")
+async def delete_template(template_id: str):
+    """Delete a template."""
+    mgr = _get_orch_mgr()
+    ok = mgr.delete_template(template_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"deleted": template_id}
+
+
+@router.post("/templates/{template_id}/apply")
+async def apply_template(template_id: str):
+    """Create a new orchestration from a template.
+
+    The new orchestration skips the planning phase and goes directly to execution.
+    """
+    mgr = _get_orch_mgr()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    user_task_description = body.get("user_task_description", "")
+    coordinator_id = body.get("coordinator_id", "")
+    owner_id = body.get("owner_id", "anonymous")
+    result = mgr.apply_template(template_id, user_task_description, coordinator_id, owner_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return result.to_dict()
+
+
+# =============================================================================
 # Monitoring Endpoints
 # =============================================================================
 

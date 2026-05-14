@@ -17,7 +17,7 @@ from collaboration.models import (
     TaskOrchestration, SubTask, CriticReview,
     OrchestrationPhase, ReviewDecision, TaskStatus,
 )
-from collaboration.storage import for_orchestrations, for_subtasks, for_reviews, for_events, ensure_workspace_files
+from collaboration.storage import for_orchestrations, for_subtasks, for_reviews, for_events, for_templates, ensure_workspace_files
 from collaboration.events import Event, EventType, get_event_bus
 
 _log = logging.getLogger(__name__)
@@ -143,6 +143,7 @@ class OrchestrationManager:
         self._subtask_store = for_subtasks(ws_path)
         self._review_store = for_reviews(ws_path)
         self._event_store = for_events(ws_path)
+        self._template_store = for_templates(ws_path)
         self._bus = get_event_bus()
 
         # Wire event bus → persistent event store
@@ -839,3 +840,164 @@ class OrchestrationManager:
         # Transition to executing and run
         self.update_phase(orch_id, OrchestrationPhase.EXECUTING)
         return self.execute_orchestration(orch_id, agent_pool)
+
+    # ─── Orchestration Templates ────────────────────────────────────────────────
+
+    def save_orchestration_as_template(
+        self,
+        orch_id: str,
+        name: str,
+        description: str = "",
+        tags: list[str] | None = None,
+    ) -> "OrchestrationTemplate | None":
+        """Save a completed orchestration as a reusable template.
+
+        The template captures the subtask skeleton (titles, descriptions, dependencies)
+        so a future orchestration can skip the Coordinator planning phase and go
+        directly to execution with the same structure.
+
+        Args:
+            orch_id: source orchestration
+            name: human-readable template name
+            description: optional description
+            tags: optional tags for discovery
+
+        Returns:
+            The created template, or None if orch_id not found or not completed.
+        """
+        import uuid
+        from collaboration.models import OrchestrationTemplate as OT
+
+        orch = self.get_orchestration(orch_id)
+        if not orch or orch.phase != OrchestrationPhase.COMPLETED:
+            _log.warning("save_orchestration_as_template: orch %s not found or not completed", orch_id)
+            return None
+
+        subtasks = self.get_orchestration_subtasks(orch_id)
+        # Build skeleton: only stable fields (no runtime state)
+        skeleton = []
+        for st in subtasks:
+            skeleton.append({
+                "title": st.title,
+                "description": st.description,
+                "dependencies": st.dependencies,
+            })
+
+        # Compute source metrics
+        completed = sum(1 for st in subtasks if st.status == TaskStatus.COMPLETED)
+        failed = sum(1 for st in subtasks if st.status == TaskStatus.FAILED)
+        report = self.get_orchestration_report(orch_id)
+        total_time = report.get("total_duration_seconds", 0)
+
+        template = OT(
+            template_id=f"tpl-{uuid.uuid4().hex[:12]}",
+            name=name,
+            description=description,
+            source_orchestration_id=orch_id,
+            subtask_skeleton=skeleton,
+            tags=tags or [],
+            source_metrics={
+                "total_subtasks": len(subtasks),
+                "completed_subtasks": completed,
+                "failed_subtasks": failed,
+                "total_duration_seconds": total_time,
+            },
+        )
+        self._template_store.upsert(template.to_dict())
+        _log.info("save_orchestration_as_template: created %s for orch %s", template.template_id, orch_id)
+        return template
+
+    def list_templates(self, tag: str | None = None) -> list[dict]:
+        """List all saved templates, optionally filtered by tag."""
+        all_templates = self._template_store.list()
+        if tag:
+            all_templates = [t for t in all_templates if tag in t.get("tags", [])]
+        return all_templates
+
+    def get_template(self, template_id: str) -> dict | None:
+        """Get a template by ID."""
+        return self._template_store.get(template_id)
+
+    def delete_template(self, template_id: str) -> bool:
+        """Delete a template."""
+        return self._template_store.delete(template_id)
+
+    def apply_template(
+        self,
+        template_id: str,
+        user_task_description: str,
+        coordinator_id: str,
+        owner_id: str = "anonymous",
+    ) -> TaskOrchestration | None:
+        """Create a new orchestration from a template, skipping the planning phase.
+
+        The new orchestration is created in EXECUTING phase with all subtasks
+        pre-created from the template skeleton, then execute_orchestration is called.
+
+        Args:
+            template_id: template to apply
+            user_task_description: new user task to execute
+            coordinator_id: coordinator agent to use
+            owner_id: owner of the new orchestration
+
+        Returns:
+            The new orchestration record, or None if template not found.
+        """
+        import uuid
+
+        tpl_data = self.get_template(template_id)
+        if not tpl_data:
+            _log.warning("apply_template: template %s not found", template_id)
+            return None
+
+        # Create new orchestration
+        orch_id = f"orch-{uuid.uuid4().hex[:12]}"
+        root_task_id = f"task-{uuid.uuid4().hex[:12]}"
+        now = _now_iso()
+
+        new_orch = TaskOrchestration(
+            orchestration_id=orch_id,
+            root_task_id=root_task_id,
+            coordinator_id=coordinator_id,
+            owner_id=owner_id,
+            user_task_description=user_task_description,
+            phase=OrchestrationPhase.EXECUTING,
+            sub_task_ids=[],
+            created_at=now,
+            updated_at=now,
+        )
+        self._orch_store.upsert(new_orch.to_dict())
+        self._emit("orchestration.started", new_orch.to_dict())
+
+        # Create subtasks from skeleton
+        subtask_ids = []
+        subtask_id_map = {}  # old idx -> new id
+
+        for idx, skeleton_item in enumerate(tpl_data.get("subtask_skeleton", [])):
+            st_id = f"st-{uuid.uuid4().hex[:12]}"
+            subtask_id_map[idx] = st_id
+            subtask = SubTask(
+                sub_task_id=st_id,
+                parent_orchestration_id=orch_id,
+                title=skeleton_item["title"],
+                description=skeleton_item["description"],
+                status=TaskStatus.PENDING,
+                dependencies=[],  # will be resolved below
+                created_at=now,
+                updated_at=now,
+            )
+            # Map old dependency indices to new IDs
+            old_deps = skeleton_item.get("dependencies", [])
+            subtask.dependencies = [subtask_id_map[d] for d in old_deps if d in subtask_id_map]
+            self._subtask_store.upsert(subtask.to_dict())
+            self._emit("subtask.planned", subtask.to_dict())
+            subtask_ids.append(st_id)
+
+        # Update orch with subtask IDs and move to executing
+        new_orch.sub_task_ids = subtask_ids
+        new_orch.updated_at = _now_iso()
+        self._orch_store.upsert(new_orch.to_dict())
+
+        _log.info("apply_template: created orch %s from template %s with %d subtasks", orch_id, template_id, len(subtask_ids))
+        # Run it
+        return self.execute_orchestration(orch_id, [])

@@ -563,3 +563,56 @@ class CriticReview:
             decision=decision,
             created_at=data.get("created_at", _now_iso()),
         )
+
+
+# ─── OrchestrationTemplate ────────────────────────────────────────────────────
+
+
+@dataclass
+class OrchestrationTemplate:
+    """A saved template from a successful orchestration — captures the Coordinator's
+    decomposition pattern so it can be replayed on a new user task without
+    requiring the Coordinator to re-plan."""
+
+    template_id: str
+    name: str
+    description: str = ""
+    # The original orchestration_id this template was created from
+    source_orchestration_id: str | None = None
+    # Skeleton of the planned subtasks (titles + descriptions + dependency structure)
+    # Excludes runtime fields like assigned_agent_id, result, status
+    subtask_skeleton: list[dict[str, Any]] = field(default_factory=list)
+    # Coordinator configuration hint
+    coordinator_config: dict[str, Any] = field(default_factory=dict)
+    # Tags for template discovery
+    tags: list[str] = field(default_factory=list)
+    # Metrics from the source execution
+    source_metrics: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "template_id": self.template_id,
+            "name": self.name,
+            "description": self.description,
+            "source_orchestration_id": self.source_orchestration_id,
+            "subtask_skeleton": self.subtask_skeleton,
+            "coordinator_config": self.coordinator_config,
+            "tags": self.tags,
+            "source_metrics": self.source_metrics,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "OrchestrationTemplate":
+        return cls(
+            template_id=data["template_id"],
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            source_orchestration_id=data.get("source_orchestration_id"),
+            subtask_skeleton=data.get("subtask_skeleton", []),
+            coordinator_config=data.get("coordinator_config", {}),
+            tags=data.get("tags", []),
+            source_metrics=data.get("source_metrics", {}),
+            created_at=data.get("created_at", _now_iso()),
+        )

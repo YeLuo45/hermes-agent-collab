@@ -181,7 +181,8 @@ def ensure_workspace_files(workspace_id: str) -> Path:
     ws_path = get_workspace_path(workspace_id)
     ws_path.mkdir(parents=True, exist_ok=True)
     for filename in ["tasks.json", "agents.json", "skills.json", "workspace.json", "config.json",
-                    "orchestrations.json", "subtasks.json", "reviews.json", "events.json"]:
+                    "orchestrations.json", "subtasks.json", "reviews.json", "events.json",
+                    "templates.json"]:
         fp = ws_path / filename
         if not fp.exists():
             fp.write_text("[]" if filename != "config.json" else "{}")
@@ -229,3 +230,8 @@ def for_reviews(ws_path: Path) -> JsonFileStore:
 def for_events(ws_path: Path) -> JsonFileStore:
     """JsonFileStore for events.json (stores all emitted events for replay)."""
     return JsonFileStore(ws_path / "events.json", dict)  # events stored as plain dicts
+
+
+def for_templates(ws_path: Path) -> JsonFileStore:
+    """JsonFileStore for templates.json."""
+    return JsonFileStore(ws_path / "templates.json", dict)
