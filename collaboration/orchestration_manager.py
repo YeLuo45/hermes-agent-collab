@@ -789,3 +789,53 @@ class OrchestrationManager:
             "reviews": [r.to_dict() if hasattr(r, "to_dict") else r for r in orch_reviews],
             "replay_steps": self.get_replay_steps(orch_id),
         }
+
+    def resume_orchestration(
+        self,
+        orch_id: str,
+        agent_pool: list[str],
+    ) -> TaskOrchestration | None:
+        """Resume a failed or cancelled orchestration from the last successful checkpoint.
+
+        Strategy:
+        - Completed subtasks are left intact (they are the checkpoint).
+        - All FAILED, CANCELLED, PENDING, and BLOCKED subtasks are reset to PENDING
+          so they will be retried in the next execution pass.
+        - The orchestration phase is moved to EXECUTING and execution proceeds normally.
+
+        Args:
+            orch_id: the orchestration to resume
+            agent_pool: list of agent IDs available for re-execution
+
+        Returns:
+            The updated orchestration record, or None if not found.
+        """
+        orch = self.get_orchestration(orch_id)
+        if not orch:
+            return None
+
+        if orch.phase not in {OrchestrationPhase.FAILED, OrchestrationPhase.CANCELLED}:
+            _log.warning("resume_orchestration: orch %s is not in failed/cancelled state (phase=%s)", orch_id, orch.phase)
+            return None
+
+        # Mark phase as resuming (temporary)
+        self.update_phase(orch_id, OrchestrationPhase.RESUMING)
+        self._emit("orchestration.resuming", {"orchestration_id": orch_id})
+
+        # Reset all non-terminal subtasks to PENDING for retry
+        subtasks = self.get_orchestration_subtasks(orch_id)
+        reset = []
+        for st in subtasks:
+            if st.status not in SUBTASK_TERMINAL:
+                st.status = TaskStatus.PENDING
+                st.result = None
+                st.updated_at = _now_iso()
+                self._subtask_store.upsert(st.to_dict())
+                self._emit("subtask.resuming", st.to_dict())
+                reset.append(st.sub_task_id)
+
+        _log.info("resume_orchestration: %s reset %d subtasks for orch %s", orch_id, len(reset), orch_id)
+
+        # Transition to executing and run
+        self.update_phase(orch_id, OrchestrationPhase.EXECUTING)
+        return self.execute_orchestration(orch_id, agent_pool)

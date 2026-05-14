@@ -69,6 +69,8 @@ class OrchestrationPhase(str, Enum):
     REVIEWING = "reviewing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    RESUMING = "resuming"
 
 
 class ReviewDecision(str, Enum):

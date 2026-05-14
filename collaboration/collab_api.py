@@ -781,6 +781,25 @@ async def get_orchestration_events(
     return {"orchestration_id": orch_id, "count": len(events), "events": events}
 
 
+@router.post("/orchestrations/{orch_id}/resume")
+async def resume_orchestration(orch_id: str):
+    """Resume a failed or cancelled orchestration.
+
+    All non-terminal subtasks are reset to PENDING and re-executed.
+    """
+    mgr = _get_orch_mgr()
+    # Get agent pool from request body
+    try:
+        body = await request.json()
+        agent_pool = body.get("agent_pool", [])
+    except Exception:
+        agent_pool = []
+    result = mgr.resume_orchestration(orch_id, agent_pool)
+    if not result:
+        raise HTTPException(status_code=404, detail="Orchestration not found or not in resumable state")
+    return result.to_dict()
+
+
 @router.get("/orchestrations/{orch_id}/replay")
 async def get_replay(orch_id: str):
     """Get full replay: state snapshot + ordered steps."""
