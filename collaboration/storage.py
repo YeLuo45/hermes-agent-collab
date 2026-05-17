@@ -1,15 +1,64 @@
-"""JSON file-based storage with file locking for the collaboration module."""
+"""Dual-backend storage (JSON + SQLite) for the collaboration module.
+
+JSON backend: thread-safe with fcntl file locking.
+SQLite backend: WAL mode, MVCC concurrency, crash recovery.
+"""
+from __future__ import annotations
 
 import fcntl
 import json
 import logging
 import os
+import sqlite3
+import threading
+from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
 _log = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# ─── Storage backend abstract ────────────────────────────────────────────────
+
+
+class StorageBackend(ABC):
+    """Abstract storage backend interface."""
+
+    @abstractmethod
+    def list(self) -> list[T]:
+        ...
+
+    @abstractmethod
+    def get(self, key: str) -> T | None:
+        ...
+
+    @abstractmethod
+    def upsert(self, entity: T) -> T:
+        ...
+
+    @abstractmethod
+    def delete(self, key: str) -> bool:
+        ...
+
+    def _key_field(self) -> str:
+        """Return the primary key field name for the model type."""
+        mapping = {
+            "Task": "task_id",
+            "Agent": "agent_id",
+            "Skill": "skill_id",
+            "Workspace": "workspace_id",
+            "TaskOrchestration": "orchestration_id",
+            "SubTask": "sub_task_id",
+            "CriticReview": "review_id",
+        }
+        name = self._model_type.__name__
+        field = mapping.get(name)
+        if field:
+            return field
+        raise ValueError(f"Unknown model type: {name!r}")
+
 
 # ─── Storage lock ─────────────────────────────────────────────────────────────
 
@@ -36,7 +85,7 @@ class StorageLock:
 # ─── JSON File Store ──────────────────────────────────────────────────────────
 
 
-class JsonFileStore:
+class JsonFileStore(StorageBackend):
     """Thread-safe JSON file store with file locking and model-type awareness.
 
     Handles lists of model objects stored in a single JSON file. Provides
@@ -120,23 +169,6 @@ class JsonFileStore:
         self._write_raw(new_data)
         return True
 
-    def _key_field(self) -> str:
-        """Return the primary key field name for the model type."""
-        mapping = {
-            "Task": "task_id",
-            "Agent": "agent_id",
-            "Skill": "skill_id",
-            "Workspace": "workspace_id",
-            "TaskOrchestration": "orchestration_id",
-            "SubTask": "sub_task_id",
-            "CriticReview": "review_id",
-        }
-        name = self._model_type.__name__
-        field = mapping.get(name)
-        if field:
-            return field
-        raise ValueError(f"Unknown model type: {name!r}")
-
     # ─── Factory constructors ────────────────────────────────────────────────
 
     @classmethod
@@ -158,6 +190,267 @@ class JsonFileStore:
     def for_workspace_meta(cls, workspace_path: Path) -> "JsonFileStore":
         from collaboration.models import Workspace
         return cls(workspace_path / "workspace.json", Workspace)
+
+
+# ─── SQLite Store ─────────────────────────────────────────────────────────────
+
+
+def _open_sqlite(path: Path) -> sqlite3.Connection:
+    """Open SQLite connection with WAL mode and safe pragmas."""
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+# Map model type names to their table + column schemas
+_TABLE_SCHEMAS = {
+    "Agent": """
+        CREATE TABLE IF NOT EXISTS agents (
+            agent_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            role TEXT,
+            status TEXT,
+            system_prompt TEXT,
+            capabilities TEXT,
+            metadata TEXT,
+            created_at REAL,
+            updated_at REAL
+        )""",
+    "Task": """
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT,
+            status TEXT,
+            priority INTEGER,
+            complexity TEXT,
+            phase TEXT,
+            phase_history TEXT,
+            assignee TEXT,
+            depends_on TEXT,
+            blockers TEXT,
+            result TEXT,
+            error TEXT,
+            metadata TEXT,
+            created_at REAL,
+            updated_at REAL,
+            completed_at REAL
+        )""",
+    "Skill": """
+        CREATE TABLE IF NOT EXISTS skills (
+            skill_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            commands TEXT,
+            metadata TEXT,
+            created_at REAL,
+            updated_at REAL
+        )""",
+    "Workspace": """
+        CREATE TABLE IF NOT EXISTS workspaces (
+            workspace_id TEXT PRIMARY KEY,
+            name TEXT,
+            config TEXT,
+            created_at REAL,
+            updated_at REAL
+        )""",
+    "TaskOrchestration": """
+        CREATE TABLE IF NOT EXISTS orchestrations (
+            orchestration_id TEXT PRIMARY KEY,
+            data TEXT,
+            created_at REAL,
+            updated_at REAL
+        )""",
+    "SubTask": """
+        CREATE TABLE IF NOT EXISTS subtasks (
+            sub_task_id TEXT PRIMARY KEY,
+            parent_id TEXT,
+            data TEXT,
+            created_at REAL,
+            updated_at REAL
+        )""",
+    "CriticReview": """
+        CREATE TABLE IF NOT EXISTS reviews (
+            review_id TEXT PRIMARY KEY,
+            task_id TEXT,
+            data TEXT,
+            created_at REAL
+        )""",
+    "dict": """
+        CREATE TABLE IF NOT EXISTS events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT,
+            payload TEXT,
+            created_at REAL
+        )""",
+}
+
+
+class SQLiteStore(StorageBackend):
+    """SQLite-backed storage with WAL mode.
+
+    Provides CRUD operations on a single table per store instance.
+    Thread-safe via connection per thread + WAL mode.
+    """
+
+    def __init__(self, db_path: Path, model_type: type[T], table_name: str | None = None):
+        self._db_path = db_path
+        self._model_type = model_type
+        self._table_name = table_name or self._model_type.__name__.lower() + "s"
+        self._local = threading.local()
+        self._init_db()
+
+    def _conn(self) -> sqlite3.Connection:
+        """Get thread-local SQLite connection."""
+        if not hasattr(self._local, "conn"):
+            self._local.conn = _open_sqlite(self._db_path)
+        return self._local.conn
+
+    def _init_db(self):
+        """Create table if not exists."""
+        schema_sql = _TABLE_SCHEMAS.get(self._model_type.__name__)
+        if schema_sql:
+            self._conn().execute(schema_sql)
+            self._conn().commit()
+        # Index on primary key (always exists), plus status/phase for tasks
+        if self._table_name == "tasks":
+            self._conn().execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+            self._conn().execute("CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks(phase)")
+            self._conn().commit()
+
+    def _serialize(self, entity: T) -> dict[str, Any]:
+        """Serialize entity to dict, handling nested JSON fields."""
+        if isinstance(entity, dict):
+            d = dict(entity)
+        else:
+            d = entity.to_dict()
+        # JSON-serialize lists/dicts that SQLite can't store natively
+        json_cols = {"capabilities", "metadata", "phase_history", "depends_on", "blockers", "config", "data", "commands"}
+        for col in json_cols:
+            if col in d and d[col] is not None and not isinstance(d[col], str):
+                d[col] = json.dumps(d[col])
+        return d
+
+    def _deserialize(self, row: tuple, cols: list[str]) -> T:
+        """Deserialize a DB row to model instance."""
+        d = dict(zip(cols, row))
+        # Parse JSON columns
+        json_cols = {"capabilities", "metadata", "phase_history", "depends_on", "blockers", "config", "data", "commands"}
+        for col in json_cols:
+            if col in d and d[col] is not None:
+                try:
+                    d[col] = json.loads(d[col])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return self._model_type.from_dict(d)
+
+    # ─── CRUD ─────────────────────────────────────────────────────────────────
+
+    def list(self) -> list[T]:
+        """Return all entities."""
+        cols = self._cols()
+        rows = self._conn().execute(f"SELECT * FROM {self._table_name}").fetchall()
+        return [self._deserialize(row, cols) for row in rows]
+
+    def get(self, key: str) -> T | None:
+        """Fetch by primary key."""
+        key_field = self._key_field()
+        cols = self._cols()
+        row = self._conn().execute(
+            f"SELECT * FROM {self._table_name} WHERE {key_field} = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._deserialize(row, cols)
+
+    def upsert(self, entity: T) -> T:
+        """Insert or replace an entity."""
+        d = self._serialize(entity)
+        key_field = self._key_field()
+        # Filter to only columns that exist in the table
+        table_cols = set(self._cols())
+        d = {k: v for k, v in d.items() if k in table_cols}
+        cols = list(d.keys())
+        placeholders = ", ".join(["?"] * len(cols))
+        sql = f"INSERT OR REPLACE INTO {self._table_name} ({', '.join(cols)}) VALUES ({placeholders})"
+        self._conn().execute(sql, tuple(d.values()))
+        self._conn().commit()
+        return entity
+
+    def delete(self, key: str) -> bool:
+        """Delete by primary key."""
+        key_field = self._key_field()
+        cur = self._conn().execute(
+            f"DELETE FROM {self._table_name} WHERE {key_field} = ?", (key,)
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    def _cols(self) -> list[str]:
+        """Return column names for the table."""
+        rows = self._conn().execute(f"PRAGMA table_info({self._table_name})").fetchall()
+        return [r[1] for r in rows]
+
+    # ─── Events (append-only) ────────────────────────────────────────────────
+
+    def append_event(self, event_type: str, payload: dict) -> int:
+        """Append an event and return its rowid. For events table only."""
+        now = datetime.now().timestamp()
+        cur = self._conn().execute(
+            "INSERT INTO events (event_type, payload, created_at) VALUES (?, ?, ?)",
+            (event_type, json.dumps(payload), now)
+        )
+        self._conn().commit()
+        return cur.lastrowid
+
+    def list_events(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        """Return recent events as dicts."""
+        rows = self._conn().execute(
+            "SELECT event_type, payload, created_at FROM events ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset)
+        ).fetchall()
+        return [{"event_type": r[0], "payload": json.loads(r[1]), "created_at": r[2]} for r in rows]
+
+
+# ─── Dual-backend factory ──────────────────────────────────────────────────────
+
+
+def get_storage_backend(workspace_path: Path, model_type: type[T], json_filename: str) -> StorageBackend:
+    """Factory: return SQLiteStore or JsonFileStore based on workspace config.
+
+    Reads `storage_backend` from workspace config.json.
+    Defaults to JsonFileStore for backward compatibility.
+    """
+    config_path = workspace_path / "config.json"
+    backend = "json"
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text())
+            backend = config.get("storage_backend", "json")
+        except Exception:
+            pass
+
+    if backend == "sqlite":
+        db_path = workspace_path / ".hermes_collab.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        table_map = {
+            "tasks": "tasks",
+            "agents": "agents",
+            "skills": "skills",
+            "workspace.json": "workspaces",
+            "orchestrations.json": "orchestrations",
+            "subtasks.json": "subtasks",
+            "reviews.json": "reviews",
+            "events.json": "events",
+            "templates.json": "templates",
+        }
+        table_name = table_map.get(json_filename)
+        return SQLiteStore(db_path, model_type, table_name)
+    else:
+        return JsonFileStore(workspace_path / json_filename, model_type)
 
 
 # ─── Workspaces root helpers ─────────────────────────────────────────────────
