@@ -14,7 +14,7 @@ Key exports:
 __version__ = "1.0.0"
 
 from collaboration.agent_registry import AgentRegistry
-from collaboration.events import Event, EventBus, EventType, get_event_bus, AsyncMessageBus, ChannelAdapter, ChannelRegistry
+from collaboration.events import Event, EventType, get_event_bus, AsyncMessageBus, ChannelAdapter, ChannelRegistry
 from collaboration.models import (
     Agent,
     AgentRole,
@@ -78,7 +78,6 @@ __all__ = [
     "__version__",
     # Events
     "Event",
-    "EventBus",
     "EventType",
     "get_event_bus",
     "AsyncMessageBus",

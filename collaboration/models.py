@@ -20,6 +20,25 @@ class AgentRole(str, Enum):
     PM = "pm"
     QA = "qa"
     CUSTOM = "custom"
+    # chatdev-inspired extended roles
+    ORCHESTRATOR = "orchestrator"
+    EXECUTOR = "executor"
+    CRITIC = "critic"
+    MONITOR = "monitor"
+    SPECIALIST = "specialist"
+
+
+# Role-specific system prompts (chatdev-inspired)
+ROLE_SYSTEM_PROMPTS: dict[str, str] = {
+    "orchestrator": "You are the orchestrator. Your role is to coordinate team members, assign tasks, monitor progress, and ensure alignment with project goals. Delegate work appropriately based on each member's capabilities.",
+    "executor": "You are the executor. Your role is to carry out specific tasks according to the plan. Focus on completion, quality, and timely delivery of your assigned work.",
+    "critic": "You are the critic. Your role is to review plans and work products, provide constructive feedback, identify issues, and ensure quality standards are met. Be thorough and specific in your reviews.",
+    "monitor": "You are the monitor. Your role is to track progress, report blockers, update status, and flag risks. Keep stakeholders informed with accurate and timely status updates.",
+    "specialist": "You are a specialist. Your role is to provide expert knowledge in your domain. Offer deep technical insight and guidance when called upon.",
+    "developer": "You are a developer. Write, review, and refine code following best practices.",
+    "pm": "You are a project manager. Coordinate timelines, resources, and stakeholder communication.",
+    "qa": "You are a QA engineer. Test thoroughly, identify bugs, and ensure quality.",
+}
 
 
 class AgentStatus(str, Enum):
@@ -78,6 +97,24 @@ class ReviewDecision(str, Enum):
     REJECT = "reject"
 
 
+# chatdev-inspired TaskComplexity routing
+class TaskComplexity(str, Enum):
+    SIMPLE = "simple"       # Single-phase: PENDING → EXECUTING → DONE
+    NORMAL = "normal"      # Standard: PENDING → PLANNING → EXECUTING → DONE
+    COMPLEX = "complex"     # Full phase-gated: all review gates
+
+
+class Phase(str, Enum):
+    """Phase-gated pipeline phases (chatdev-inspired)."""
+    PENDING = "pending"
+    PLANNING = "planning"
+    PLAN_REVIEW = "plan_review"
+    EXECUTING = "executing"
+    EXECUTION_REVIEW = "execution_review"
+    DONE = "done"
+    REJECTED = "rejected"
+
+
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
 
@@ -89,6 +126,7 @@ class Agent:
     name: str
     role: AgentRole | str
     status: AgentStatus | str = AgentStatus.IDLE
+    system_prompt: str | None = None  # chatdev-inspired role-specific prompt
     capabilities: list[str] = field(default_factory=list)
     avatar: str | None = None
     created_at: str = field(default_factory=_now_iso)
@@ -101,6 +139,7 @@ class Agent:
             "name": self.name,
             "role": self.role.value if isinstance(self.role, AgentRole) else self.role,
             "status": self.status.value if isinstance(self.status, AgentStatus) else self.status,
+            "system_prompt": self.system_prompt,
             "capabilities": self.capabilities,
             "avatar": self.avatar,
             "created_at": self.created_at,
@@ -129,6 +168,7 @@ class Agent:
             name=data["name"],
             role=role,
             status=status,
+            system_prompt=data.get("system_prompt"),
             capabilities=data.get("capabilities", []),
             avatar=data.get("avatar"),
             created_at=data.get("created_at", _now_iso()),
@@ -171,6 +211,10 @@ class Task:
     depends_on: list[str] = field(default_factory=list)
     priority: Priority | str = Priority.MEDIUM
     workspace_id: str | None = None
+    # chatdev-inspired phase-gated pipeline fields
+    complexity: TaskComplexity | str = TaskComplexity.NORMAL
+    phase: Phase | str = Phase.PENDING
+    phase_history: list[dict] = field(default_factory=list)  # [{phase, decision, approver, comments, timestamp}]
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -187,6 +231,9 @@ class Task:
             "depends_on": self.depends_on,
             "priority": self.priority.value if isinstance(self.priority, Priority) else self.priority,
             "workspace_id": self.workspace_id,
+            "complexity": self.complexity.value if isinstance(self.complexity, TaskComplexity) else self.complexity,
+            "phase": self.phase.value if isinstance(self.phase, Phase) else self.phase,
+            "phase_history": self.phase_history,
             "metadata": self.metadata,
         }
 
@@ -219,6 +266,9 @@ class Task:
             depends_on=data.get("depends_on", []),
             priority=priority,
             workspace_id=data.get("workspace_id"),
+            complexity=data.get("complexity", "normal"),
+            phase=data.get("phase", "pending"),
+            phase_history=data.get("phase_history", []),
             metadata=data.get("metadata", {}),
         )
 
@@ -616,3 +666,96 @@ class OrchestrationTemplate:
             source_metrics=data.get("source_metrics", {}),
             created_at=data.get("created_at", _now_iso()),
         )
+
+
+# ─── Phase-Gated Pipeline Helpers (chatdev-inspired) ────────────────────────
+
+
+def evaluate_complexity(task_title: str, task_description: str = "", depends_on: list[str] | None = None) -> TaskComplexity:
+    """Evaluate task complexity for phase-gated pipeline routing.
+
+    Scoring heuristic (0-10 scale):
+    - Title keywords indicating complexity: +2
+    - Description length > 200 chars: +2
+    - Has dependencies: +3
+    - Priority critical/high: +2
+    - Estimated token count (rough): +1 if > 500 chars
+    """
+    score = 0
+    title_lower = task_title.lower()
+    task_description = task_description or ""
+    desc_len = len(task_description)
+
+    # Complexity keywords in title (stacked for compound effects)
+    # "implement" (2) + "architecture" (2) + "system" (2) = 6 for complex tasks
+    for kw in ["architecture", "refactor", "pipeline", "workflow"]:
+        if kw in title_lower:
+            score += 2
+    for kw in ["implement", "design", "build", "create", "system"]:
+        if kw in title_lower:
+            score += 1
+    for kw in ["multi", "complex", "distributed"]:
+        if kw in title_lower:
+            score += 2
+
+    simple_keywords = ["fix", "bump", "typo", "small", "quick", "simple", "minor", "update docs"]
+    for kw in simple_keywords:
+        if kw in title_lower:
+            score -= 2
+
+    # Description length (check higher thresholds first)
+    if desc_len > 1000:
+        score += 5
+    elif desc_len > 500:
+        score += 3
+    elif desc_len > 200:
+        score += 2
+
+    # Has dependencies
+    if depends_on and len(depends_on) > 0:
+        score += 3
+
+    # Clamp and map to complexity
+    score = max(0, min(10, score))
+    if score <= 2:
+        return TaskComplexity.SIMPLE
+    elif score <= 6:
+        return TaskComplexity.NORMAL
+    else:
+        return TaskComplexity.COMPLEX
+
+
+def get_next_phase(current_phase: Phase, complexity: TaskComplexity, decision: ReviewDecision = ReviewDecision.ACCEPT) -> Phase:
+    """Determine the next phase based on current phase and complexity.
+
+    For SIMPLE tasks: PENDING → EXECUTING → DONE (skip all reviews)
+    For NORMAL tasks: PENDING → PLANNING → EXECUTING → DONE (skip PLAN_REVIEW)
+    For COMPLEX tasks: full phase-gated pipeline
+    """
+    phase_order = {
+        Phase.PENDING: Phase.PLANNING,
+        Phase.PLANNING: Phase.PLAN_REVIEW,
+        Phase.PLAN_REVIEW: Phase.EXECUTING,
+        Phase.EXECUTING: Phase.EXECUTION_REVIEW,
+        Phase.EXECUTION_REVIEW: Phase.DONE,
+        Phase.DONE: Phase.DONE,
+        Phase.REJECTED: Phase.REJECTED,
+    }
+
+    if complexity == TaskComplexity.SIMPLE:
+        # Skip to EXECUTING from PENDING
+        if current_phase == Phase.PENDING:
+            return Phase.EXECUTING
+        elif current_phase == Phase.EXECUTING:
+            return Phase.DONE
+    elif complexity == TaskComplexity.NORMAL:
+        # Skip PLAN_REVIEW and EXECUTION_REVIEW
+        if current_phase == Phase.PLANNING:
+            return Phase.EXECUTING
+        elif current_phase == Phase.EXECUTING:
+            return Phase.DONE
+
+    if decision == ReviewDecision.REJECT:
+        return Phase.REJECTED
+
+    return phase_order.get(current_phase, current_phase)

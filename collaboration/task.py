@@ -276,6 +276,90 @@ class TaskManager:
         ))
         return task
 
+    # ─── Phase-Gated Pipeline (chatdev-inspired) ───────────────────────────────
+
+    def _record_phase(self, task: Task, phase: "Phase", decision: str, approver: str | None, comments: str) -> None:
+        """Record a phase gate transition in phase_history."""
+        from collaboration.models import Phase as PhaseEnum
+        p = phase if isinstance(phase, PhaseEnum) else PhaseEnum(phase)
+        task.phase_history.append({
+            "phase": p.value,
+            "decision": decision,
+            "approver": approver,
+            "comments": comments,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def transition_phase(self, task_id: str, decision: str, approver: str | None = None, comments: str = "") -> Task:
+        """Advance task to the next phase based on review decision.
+
+        Args:
+            task_id: The task to transition
+            decision: "accept" or "reject" from a reviewer
+            approver: agent_id of the reviewer
+            comments: Review comments
+        """
+        from collaboration.models import (
+            Phase, Phase as PhaseEnum, TaskComplexity, ReviewDecision,
+            get_next_phase,
+        )
+
+        task = self._store.get(task_id)
+        if not task:
+            raise KeyError(f"Task {task_id} not found")
+
+        current_phase = task.phase if isinstance(task.phase, PhaseEnum) else PhaseEnum(task.phase)
+        complexity = task.complexity if isinstance(task.complexity, TaskComplexity) else TaskComplexity(task.complexity)
+        review_decision = ReviewDecision(decision)
+
+        # Record this gate
+        self._record_phase(task, current_phase, decision, approver, comments)
+
+        # Compute next phase
+        next_phase = get_next_phase(current_phase, complexity, review_decision)
+        task.phase = next_phase
+        task.updated_at = datetime.now(timezone.utc).isoformat()
+
+        # If rejected, also set status to FAILED
+        if next_phase == PhaseEnum.REJECTED:
+            task.status = TaskStatus.FAILED
+        elif next_phase == PhaseEnum.DONE:
+            task.status = TaskStatus.COMPLETED
+
+        task = self._store.upsert(task)
+        self._bus.emit_sync(Event(
+            EventType.TASK_UPDATED,
+            workspace_id=self.workspace_id,
+            payload=task.to_dict(),
+        ))
+        return task
+
+    def advance_phase(self, task_id: str) -> Task:
+        """Advance task to next phase without review (for SIMPLE/NORMAL auto-advance)."""
+        from collaboration.models import Phase, Phase as PhaseEnum, TaskComplexity, get_next_phase
+
+        task = self._store.get(task_id)
+        if not task:
+            raise KeyError(f"Task {task_id} not found")
+
+        current_phase = task.phase if isinstance(task.phase, PhaseEnum) else PhaseEnum(task.phase)
+        complexity = task.complexity if isinstance(task.complexity, TaskComplexity) else TaskComplexity(task.complexity)
+
+        next_phase = get_next_phase(current_phase, complexity)
+        task.phase = next_phase
+        task.updated_at = datetime.now(timezone.utc).isoformat()
+
+        if next_phase == PhaseEnum.DONE:
+            task.status = TaskStatus.COMPLETED
+
+        task = self._store.upsert(task)
+        self._bus.emit_sync(Event(
+            EventType.TASK_UPDATED,
+            workspace_id=self.workspace_id,
+            payload=task.to_dict(),
+        ))
+        return task
+
     def assign(self, task_id: str, agent_id: str | None) -> Task:
         """Assign or unassign a task."""
         task = self._store.get(task_id)

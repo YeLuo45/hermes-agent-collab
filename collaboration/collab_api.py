@@ -26,7 +26,7 @@ try:
     from .task_manager import TaskManager
     from .skill_system import SkillSystem
     from .monitor import RuntimeMonitor
-    from .events import EventBus, EventType, get_event_bus
+    from .events import EventType, get_event_bus
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -38,7 +38,7 @@ except ImportError:
     from collaboration.task_manager import TaskManager
     from collaboration.skill_system import SkillSystem
     from collaboration.monitor import RuntimeMonitor
-    from collaboration.events import EventBus, EventType, get_event_bus
+    from collaboration.events import EventType, get_event_bus
 
 _log = logging.getLogger(__name__)
 
@@ -132,11 +132,15 @@ class TaskUpdate(BaseModel):
 
 
 class TaskAction(BaseModel):
-    action: str  # start, complete, fail, block, unblock, cancel
+    action: str  # start, complete, fail, block, unblock, cancel, phase_transition
     agent_id: Optional[str] = None
     result: Optional[dict] = None
     error: Optional[str] = None
     blockers: Optional[list[str]] = None
+    # Phase transition fields
+    decision: Optional[str] = None  # "accept" or "reject" for phase_transition
+    approver: Optional[str] = None   # agent_id of reviewer
+    comments: Optional[str] = ""
 
 
 class SkillCreate(BaseModel):
@@ -411,7 +415,12 @@ async def task_action(task_id: str, data: TaskAction):
     
     elif data.action == "cancel":
         task = task_mgr.cancel_task(task_id)
-    
+
+    elif data.action == "phase_transition":
+        if not data.decision:
+            raise HTTPException(status_code=400, detail="decision required for phase_transition")
+        task = task_mgr.transition_phase(task_id, data.decision, data.approver, data.comments or "")
+
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {data.action}")
     
