@@ -11,7 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, StreamingResponse
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 try:
@@ -931,6 +932,45 @@ async def export_metrics():
 
 
 # =============================================================================
+# Message Bus Metrics Endpoints (dead-letter + queue metrics)
+# =============================================================================
+
+@router.get("/dead_letters")
+async def get_dead_letters():
+    """Get all dead-letter events that failed all retry attempts.
+
+    Dead letters are events that could not be published after 3 retries
+    and have been persisted to ~/.hermes/collab/dead_letters.json.
+    """
+    return {
+        "dead_letters": event_bus.get_dead_letters(),
+        "count": len(event_bus.get_dead_letters()),
+    }
+
+
+@router.delete("/dead_letters")
+async def clear_dead_letters():
+    """Clear all dead-letter events."""
+    event_bus.clear_dead_letters()
+    return {"success": True, "message": "Dead letters cleared"}
+
+
+@router.get("/metrics")
+async def get_message_bus_metrics():
+    """Get message bus metrics including queue depths and drop counts.
+
+    Returns:
+        total_published: Total events published since bus start
+        total_failed: Events that exhausted all retries and went to dead-letter
+        queue_depths: Per-workspace (or None for global) queue sizes
+        drop_counts: Per-workspace count of events dropped due to backpressure
+        total_subscribers: Number of registered subscribers
+        total_adapters: Number of registered channel adapters
+    """
+    return event_bus.get_metrics()
+
+
+# =============================================================================
 # WebSocket Integration
 # =============================================================================
 
@@ -1026,18 +1066,8 @@ async def sse_broadcast_event(event):
     await _sse_manager.broadcast(event_dict)
 
 
-async def combined_broadcast(event):
-    """Broadcast to both WebSocket and SSE clients simultaneously."""
-    await ws_broadcast_event(event)
-    await sse_broadcast_event(event)
-
-
-# Replace single broadcaster with combined (supports both WS + SSE)
-event_bus.set_ws_broadcast(combined_broadcast)
-
-
-# Set up event bus to broadcast via WebSocket
-event_bus.set_ws_broadcast(ws_broadcast_event)
+# Set up event bus to broadcast via SSE (WebSocket is handled by ChannelAdapter)
+event_bus.set_ws_broadcast(sse_broadcast_event)
 
 
 @router.get("/sse")

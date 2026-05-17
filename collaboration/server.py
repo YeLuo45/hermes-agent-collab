@@ -10,6 +10,8 @@ Usage:
     python -m collab.server --web-only        # Serve only the web UI (no API)
 """
 
+from contextlib import asynccontextmanager
+
 import argparse
 import asyncio
 import logging
@@ -23,14 +25,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
+from contextlib import asynccontextmanager
 import uvicorn
 
 # Import collaboration modules
 from collaboration import (
-    WorkspaceManager, AgentRegistry, TaskManager, 
+    WorkspaceManager, AgentRegistry, TaskManager,
     SkillSystem, RuntimeMonitor, __version__
 )
 from collaboration.collab_api import router as collab_router
+from collaboration.events import get_event_bus
+from collaboration.channels import WebSocketChannelAdapter, SSEChannelAdapter, HTTPWebhookChannelAdapter
+from collaboration.events import ChannelRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -52,12 +58,28 @@ def get_web_dist() -> Path:
     return None
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager: start/stop message bus consumer with the app."""
+    bus = get_event_bus()
+    channel_registry = ChannelRegistry()
+    channel_registry.register(WebSocketChannelAdapter(), workspace_id=None)
+    channel_registry.register(SSEChannelAdapter(), workspace_id=None)
+    http_adapter = HTTPWebhookChannelAdapter()
+    channel_registry.register(http_adapter, workspace_id=None)
+    bus.set_channel_registry(channel_registry)
+    bus._start_consumer()
+    yield
+    bus._stop_consumer()
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="Hermes Agent Collaboration API",
         version=__version__,
-        description="REST API for team collaboration features"
+        description="REST API for team collaboration features",
+        lifespan=lifespan,
     )
     
     # CORS middleware

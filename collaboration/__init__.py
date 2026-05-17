@@ -14,7 +14,7 @@ Key exports:
 __version__ = "1.0.0"
 
 from collaboration.agent_registry import AgentRegistry
-from collaboration.events import Event, EventBus, EventType, get_event_bus
+from collaboration.events import Event, EventBus, EventType, get_event_bus, AsyncMessageBus, ChannelAdapter, ChannelRegistry
 from collaboration.models import (
     Agent,
     AgentRole,
@@ -81,6 +81,10 @@ __all__ = [
     "EventBus",
     "EventType",
     "get_event_bus",
+    "AsyncMessageBus",
+    "ChannelAdapter",
+    "ChannelRegistry",
+    "DeadLetterEvent",
     # WebSocket
     "standalone_server",
     "ws_rooms_summary",
