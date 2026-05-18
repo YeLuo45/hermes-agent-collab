@@ -15,7 +15,7 @@ from typing import Optional
 
 from collaboration.models import (
     TaskOrchestration, SubTask, CriticReview,
-    OrchestrationPhase, ReviewDecision, TaskStatus,
+    OrchestrationPhase, ReviewDecision, TaskStatus, TaskComplexity, Phase,
 )
 from collaboration.storage import for_orchestrations, for_subtasks, for_reviews, for_events, for_templates, ensure_workspace_files
 from collaboration.events import Event, EventType, get_event_bus
@@ -33,6 +33,154 @@ SUBTASK_TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatu
 # Per-agent circuit breaker registry: agent_id -> {"failures": int, "tripped_at": float|None}
 _agent_circuit_breakers: dict[str, dict] = {}
 _breaker_lock = __import__("threading").Lock()
+
+
+# ─── TaskRouter ───────────────────────────────────────────────────────────────
+
+
+class TaskRouter:
+    """Routes task decomposition and execution based on task complexity.
+
+    SIMPLE  (score 0-2):  Single SubTask, no LLM decomposition, PENDING→EXECUTING→DONE
+    NORMAL  (score 3-6):  2-4 SubTasks, LLM decomposition, PENDING→PLANNING→EXECUTING→DONE
+    COMPLEX (score 7-10): 4-8 SubTasks, LLM decomposition + CriticReview quality gates
+    """
+
+    def __init__(self, subtask_store, orch_store, review_store):
+        self._subtask_store = subtask_store
+        self._orch_store = orch_store
+        self._review_store = review_store
+
+    def route(self, orch: TaskOrchestration) -> list[SubTask]:
+        """Return SubTask list based on complexity in context_pool."""
+        complexity_str = orch.context_pool.get("complexity", "normal")
+        try:
+            if isinstance(complexity_str, str):
+                complexity = TaskComplexity(complexity_str)
+            else:
+                complexity = complexity_str
+        except (ValueError, TypeError):
+            complexity = TaskComplexity.NORMAL
+
+        if complexity == TaskComplexity.SIMPLE:
+            return self._route_simple(orch)
+        elif complexity == TaskComplexity.NORMAL:
+            return self._route_normal(orch)
+        else:
+            return self._route_complex(orch)
+
+    def _route_simple(self, orch: TaskOrchestration) -> list[SubTask]:
+        """SIMPLE: single SubTask, no LLM, skip directly to EXECUTING."""
+        st = SubTask(
+            sub_task_id=f"st_{uuid.uuid4().hex[:12]}",
+            parent_orchestration_id=orch.orchestration_id,
+            title=orch.user_task_description[:100],
+            description=orch.user_task_description,
+            assigned_agent_id=None,
+            status=TaskStatus.PENDING,
+            dependencies=[],
+            result=None,
+        )
+        self._subtask_store.upsert(st.to_dict())
+        return [st]
+
+    def _route_normal(self, orch: TaskOrchestration) -> list[SubTask]:
+        """NORMAL: 2-4 SubTasks, LLM decomposition, no review gates."""
+        # Check if already decomposed (replay scenario)
+        if orch.sub_task_ids:
+            existing = [self._subtask_store.get(sid) for sid in orch.sub_task_ids]
+            if any(e is not None for e in existing):
+                return [e for e in existing if e is not None]
+
+        # Try LLM decomposition first
+        sub_tasks = self._llm_decompose(orch, min_subs=2, max_subs=4)
+        if not sub_tasks:
+            # Fallback: rule-based single task
+            return self._route_simple(orch)
+
+        for st in sub_tasks:
+            self._subtask_store.upsert(st.to_dict())
+        return sub_tasks
+
+    def _route_complex(self, orch: TaskOrchestration) -> list[SubTask]:
+        """COMPLEX: 4-8 SubTasks, LLM decomposition, CriticReview quality gates at PLAN_REVIEW."""
+        # Check if already decomposed
+        if orch.sub_task_ids:
+            existing = [self._subtask_store.get(sid) for sid in orch.sub_task_ids]
+            if any(e is not None for e in existing):
+                return [e for e in existing if e is not None]
+
+        # LLM decomposition with higher sub-task count
+        sub_tasks = self._llm_decompose(orch, min_subs=4, max_subs=8)
+        if not sub_tasks:
+            # Fallback to NORMAL routing
+            return self._route_normal(orch)
+
+        for st in sub_tasks:
+            self._subtask_store.upsert(st.to_dict())
+
+        # Pre-create PLAN_REVIEW gate reviews
+        self._create_plan_reviews(orch.orchestration_id, sub_tasks)
+
+        return sub_tasks
+
+    def _llm_decompose(self, orch: TaskOrchestration, min_subs: int, max_subs: int) -> list[SubTask]:
+        """Call AIAgent to decompose task into SubTasks. Returns empty list on failure."""
+        user_desc = orch.context_pool.get("user_requirements", orch.user_task_description)
+        prompt = f"""你是一个任务分解专家。请将以下任务分解为 {min_subs}-{max_subs} 个可独立执行的子任务。
+
+任务：{user_desc}
+
+请严格按以下 JSON 格式输出（不要添加任何解释，不要使用 markdown 代码块）：
+{{
+  "sub_tasks": [
+    {{"title": "子任务标题", "description": "详细描述", "dependencies": ["依赖的子任务标题"]}}
+  ]
+}}"""
+        try:
+            response = _call_aia_agent(prompt)
+            parsed = _parse_json_response(response)
+        except Exception:
+            return []
+
+        if not parsed or not parsed.get("sub_tasks"):
+            return []
+
+        title_to_id = {}
+        for st_data in parsed["sub_tasks"]:
+            st_id = f"st_{uuid.uuid4().hex[:12]}"
+            title_to_id[st_data["title"]] = st_id
+
+        sub_tasks = []
+        for st_data in parsed["sub_tasks"]:
+            deps = [title_to_id[d] for d in st_data.get("dependencies", []) if d in title_to_id]
+            st = SubTask(
+                sub_task_id=title_to_id[st_data["title"]],
+                parent_orchestration_id=orch.orchestration_id,
+                title=st_data["title"],
+                description=st_data["description"],
+                assigned_agent_id=None,
+                status=TaskStatus.PENDING,
+                dependencies=deps,
+                result=None,
+            )
+            sub_tasks.append(st)
+
+        return sub_tasks
+
+    def _create_plan_reviews(self, orch_id: str, sub_tasks: list[SubTask]):
+        """Pre-create CriticReview entries for PLAN_REVIEW gate."""
+        for st in sub_tasks:
+            review = CriticReview(
+                review_id=f"cr_{uuid.uuid4().hex[:12]}",
+                orchestration_id=orch_id,
+                sub_task_id=st.sub_task_id,
+                critic_agent_id="system",
+                score=0.0,
+                comments="",
+                decision=ReviewDecision.PENDING,
+            )
+            self._review_store.upsert(review.to_dict())
 
 
 def _is_agent_circuit_open(agent_id: str) -> bool:
@@ -145,9 +293,10 @@ class OrchestrationManager:
         self._event_store = for_events(ws_path)
         self._template_store = for_templates(ws_path)
         self._bus = get_event_bus()
+        self._router = TaskRouter(self._subtask_store, self._orch_store, self._review_store)
 
         # Wire event bus → persistent event store
-        self._bus.set_event_store(self._event_store.upsert)
+        # self._bus.set_event_store(self._event_store.upsert)  # AsyncMessageBus has no set_event_store
 
     # ─── Orchestration CRUD ──────────────────────────────────────────────────
 
@@ -234,62 +383,31 @@ class OrchestrationManager:
     # ─── Coordinator — 任务分解 ─────────────────────────────────────────────
 
     def decompose_task(self, orch_id: str) -> list[SubTask]:
-        """Coordinator analyses the root task and produces SubTask list via AIAgent."""
+        """Coordinator analyses the root task and routes to TaskRouter based on complexity.
+
+        SIMPLE:  single SubTask, no LLM call
+        NORMAL:  2-4 SubTasks via LLM decomposition
+        COMPLEX: 4-8 SubTasks via LLM + CriticReview quality gates
+        """
         orch = self.get_orchestration(orch_id)
         if not orch:
             raise ValueError(f"Orchestration {orch_id} not found")
 
-        user_desc = orch.context_pool.get("user_requirements", "")
-        prompt = f"""你是一个任务分解专家。请将以下任务分解为 3-6 个可独立执行的子任务。
+        # Use TaskRouter to decompose based on complexity
+        sub_tasks = self._router.route(orch)
 
-任务：{user_desc}
-
-请严格按以下 JSON 格式输出（不要添加任何解释，不要使用 markdown 代码块）：
-{{
-  "sub_tasks": [
-    {{"title": "子任务标题", "description": "详细描述", "dependencies": ["依赖的子任务标题"]}}
-  ],
-  "execution_plan": "执行顺序说明",
-  "context": {{"关键提取": "值"}}
-}}"""
-
-        response = _call_aia_agent(prompt)
-        parsed = _parse_json_response(response)
-
-        if not parsed.get("sub_tasks"):
-            raise ValueError(f"Coordinator failed to decompose: {response[:200]}")
-
-        title_to_id = {}
-        for st_data in parsed["sub_tasks"]:
-            st_id = f"st_{uuid.uuid4().hex[:12]}"
-            title_to_id[st_data["title"]] = st_id
-
-        sub_tasks = []
-        for st_data in parsed["sub_tasks"]:
-            deps = [title_to_id[d] for d in st_data.get("dependencies", []) if d in title_to_id]
-            st = SubTask(
-                sub_task_id=title_to_id[st_data["title"]],
-                parent_orchestration_id=orch_id,
-                title=st_data["title"],
-                description=st_data["description"],
-                assigned_agent_id=None,
-                status=TaskStatus.PENDING,
-                dependencies=deps,
-                result=None,
-            )
-            self._subtask_store.upsert(st.to_dict())
-            sub_tasks.append(st)
+        if not sub_tasks:
+            raise ValueError(f"TaskRouter failed to decompose task for orchestration {orch_id}")
 
         # Persist updated orch
         orch.sub_task_ids = [st.sub_task_id for st in sub_tasks]
-        orch.context_pool.update(parsed.get("context", {}))
         orch.updated_at = _now_iso()
         self._orch_store.upsert(orch.to_dict())
 
         self._emit("orchestration.plan_ready", {
             "orchestration_id": orch_id,
             "sub_tasks": [st.to_dict() for st in sub_tasks],
-            "execution_plan": parsed.get("execution_plan", ""),
+            "complexity": orch.context_pool.get("complexity", "normal"),
         })
         return sub_tasks
 
