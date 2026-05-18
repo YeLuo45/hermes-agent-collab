@@ -55,6 +55,7 @@ class StorageBackend(ABC):
             "AgentMessage": "msg_id",
             "AgentSession": "session_id",
             "TaskDistribution": "distribution_id",
+            "ApiKey": "key_id",
         }
         name = self._model_type.__name__
         field = mapping.get(name)

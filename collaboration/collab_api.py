@@ -152,6 +152,27 @@ class SkillCreate(BaseModel):
 
 
 # =============================================================================
+# Auth Request/Response Models
+# =============================================================================
+
+class ApiKeyCreate(BaseModel):
+    name: str
+    workspace_id: str
+    scopes: list[str]  # ["read", "write", "admin"]
+
+
+class ApiKeyResponse(BaseModel):
+    key_id: str
+    name: str
+    workspace_id: str
+    scopes: list[str]
+    created_at: str
+    last_used_at: Optional[str]
+    is_active: bool
+    key_secret: Optional[str] = None  # only populated on create
+
+
+# =============================================================================
 # Multi-Agent Protocol Request/Response Models
 # =============================================================================
 
@@ -1126,6 +1147,100 @@ async def sse_broadcast_event(event):
 
 # Set up event bus to broadcast via SSE (WebSocket is handled by ChannelAdapter)
 event_bus.set_ws_broadcast(sse_broadcast_event)
+
+
+# =============================================================================
+# Auth Endpoints
+# =============================================================================
+
+def _get_auth_service(workspace_id: str = "default"):
+    """Get AuthService for a workspace."""
+    from collaboration.storage import ensure_workspace_files
+    from collaboration.auth import AuthService
+    ws_path = ensure_workspace_files(workspace_id)
+    return AuthService(ws_path)
+
+
+@router.post("/auth/keys", response_model=ApiKeyResponse)
+async def create_api_key(data: ApiKeyCreate):
+    """Create a new API key. The key_secret is returned ONLY here — never again."""
+    auth = _get_auth_service(data.workspace_id)
+    key, raw_secret = auth.create_key(data.name, data.workspace_id, data.scopes)
+    resp = key.to_dict()
+    resp["key_secret"] = raw_secret
+    return ApiKeyResponse(**resp)
+
+
+@router.get("/auth/keys")
+async def list_api_keys(workspace_id: str = "default"):
+    """List all API keys for a workspace (secrets are masked)."""
+    auth = _get_auth_service(workspace_id)
+    keys = auth.list_keys(workspace_id)
+    return {"keys": [k.to_dict() for k in keys]}
+
+
+@router.get("/auth/keys/{key_id}", response_model=ApiKeyResponse)
+async def get_api_key(key_id: str, workspace_id: str = "default"):
+    """Get API key metadata."""
+    auth = _get_auth_service(workspace_id)
+    key = auth.get_key(key_id)
+    if not key or key.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return ApiKeyResponse(**key.to_dict())
+
+
+@router.delete("/auth/keys/{key_id}")
+async def revoke_api_key(key_id: str, workspace_id: str = "default"):
+    """Revoke (deactivate) an API key."""
+    auth = _get_auth_service(workspace_id)
+    ok = auth.revoke_key(key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"success": True}
+
+
+@router.post("/auth/verify")
+async def verify_api_key(x_api_key: str):
+    """Verify an API key and return its metadata.
+
+    Header: X-API-Key: <key_id:secret>
+    """
+    if ":" not in x_api_key:
+        raise HTTPException(status_code=400, detail="Invalid key format. Use key_id:secret")
+    key_id, raw_secret = x_api_key.split(":", 1)
+
+    # Try all workspaces to find the key
+    workspaces = workspace_mgr.list_workspaces()
+    found_key = None
+    for ws in workspaces:
+        auth = _get_auth_service(ws.workspace_id)
+        key = auth._store.verify(raw_secret, key_id)
+        if key:
+            found_key = key
+            break
+
+    if not found_key:
+        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+    return found_key.to_dict()
+
+
+# =============================================================================
+# Dashboard Endpoint
+# =============================================================================
+
+@router.get("/dashboard")
+async def get_dashboard():
+    """Serve the real-time web dashboard."""
+    import inspect
+    from pathlib import Path
+    # Find dashboard file relative to collaboration package
+    from collaboration import __path__ as collab_paths
+    collab_dir = Path(collab_paths[0])
+    dashboard_path = collab_dir.parent / "dashboard" / "index.html"
+    if not dashboard_path.exists():
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    from fastapi.responses import FileResponse
+    return FileResponse(str(dashboard_path), media_type="text/html")
 
 
 @router.get("/sse")

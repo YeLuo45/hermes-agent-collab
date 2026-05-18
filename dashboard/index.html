@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Agent Team — Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #252936;
+    --border: #2e3347;
+    --text: #e2e8f0;
+    --text-dim: #8892a4;
+    --accent: #6366f1;
+    --accent2: #818cf8;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+  }
+
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* ─── Header ─── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+  header h1 { font-size: 16px; font-weight: 600; color: var(--accent2); }
+  .ws-badge { background: var(--accent); color: white; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+  .conn-status { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .conn-dot.offline { background: var(--red); }
+
+  /* ─── Layout ─── */
+  .layout { display: flex; height: calc(100vh - 56px); }
+
+  /* ─── Sidebar ─── */
+  .sidebar { width: 200px; background: var(--surface); border-right: 1px solid var(--border); padding: 16px 0; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 20px; cursor: pointer; color: var(--text-dim); font-size: 14px; transition: all 0.15s; }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--surface2); color: var(--accent2); border-right: 2px solid var(--accent); }
+  .nav-icon { width: 16px; height: 16px; }
+
+  /* ─── Main ─── */
+  .main { flex: 1; overflow-y: auto; padding: 24px; }
+
+  /* ─── Cards ─── */
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .stat-card .label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; color: var(--text); }
+  .stat-card .sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  .stat-card .value.green { color: var(--green); }
+  .stat-card .value.yellow { color: var(--yellow); }
+  .stat-card .value.red { color: var(--red); }
+
+  /* ─── Section ─── */
+  .section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: hidden; }
+  .section-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .section-title { font-size: 14px; font-weight: 600; }
+  .section-body { padding: 16px 18px; }
+
+  /* ─── Filters ─── */
+  .filters { display: flex; gap: 12px; align-items: center; }
+  .filter-select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 4px 10px; border-radius: 6px; font-size: 12px; }
+
+  /* ─── Event Feed ─── */
+  .event-list { max-height: 400px; overflow-y: auto; }
+  .event-item { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .event-item:last-child { border-bottom: none; }
+  .event-time { color: var(--text-dim); font-size: 11px; white-space: nowrap; min-width: 60px; }
+  .event-type { font-weight: 600; min-width: 120px; }
+  .event-type.agent { color: var(--blue); }
+  .event-type.task { color: var(--purple); }
+  .event-type.orch { color: var(--yellow); }
+  .event-type.skill { color: var(--green); }
+  .event-type.system { color: var(--text-dim); }
+  .event-payload { color: var(--text-dim); flex: 1; word-break: break-all; }
+  .event-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+  .badge-created { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge-completed { background: rgba(59,130,246,0.15); color: var(--blue); }
+  .badge-failed { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge-registered { background: rgba(168,85,247,0.15); color: var(--purple); }
+  .badge-phase { background: rgba(234,179,8,0.15); color: var(--yellow); }
+
+  /* ─── Tables ─── */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+
+  /* ─── Status dots ─── */
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+  .status-online { background: var(--green); }
+  .status-offline { background: var(--text-dim); }
+  .status-busy { background: var(--yellow); }
+  .status-error { background: var(--red); }
+
+  /* ─── Phase badges ─── */
+  .phase-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .phase-planning { background: rgba(168,85,247,0.15); color: var(--purple); }
+  .phase-executing { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .phase-reviewing { background: rgba(59,130,246,0.15); color: var(--blue); }
+  .phase-completing { background: rgba(34,197,94,0.15); color: var(--green); }
+  .phase-failed { background: rgba(239,68,68,0.15); color: var(--red); }
+
+  /* ─── Tab panel ─── */
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ─── Empty state ─── */
+  .empty-state { text-align: center; padding: 40px; color: var(--text-dim); font-size: 13px; }
+  .empty-state .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
+
+  /* ─── Health ─── */
+  .health-bar { display: flex; gap: 3px; margin-right: 8px; }
+  .health-segment { width: 6px; height: 14px; border-radius: 2px; background: var(--border); }
+  .health-segment.good { background: var(--green); }
+  .health-segment.warn { background: var(--yellow); }
+  .health-segment.bad { background: var(--red); }
+
+  /* ─── Scrollbar ─── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Hermes Agent Team</h1>
+  <span class="ws-badge" id="wsName">default</span>
+  <div class="conn-status">
+    <div class="health-bar" id="healthBar">
+      <div class="health-segment good" id="seg1"></div>
+      <div class="health-segment good" id="seg2"></div>
+      <div class="health-segment good" id="seg3"></div>
+      <div class="health-segment good" id="seg4"></div>
+    </div>
+    <div class="conn-dot" id="connDot"></div>
+    <span id="connLabel">Connecting…</span>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <div class="nav-item active" data-tab="overview" onclick="switchTab('overview')">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Overview
+    </div>
+    <div class="nav-item" data-tab="events" onclick="switchTab('events')">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      Event Feed
+      <span id="eventCount" style="margin-left:auto;background:var(--accent);color:white;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:600;">0</span>
+    </div>
+    <div class="nav-item" data-tab="orchs" onclick="switchTab('orchs')">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+      Orchestrations
+    </div>
+    <div class="nav-item" data-tab="agents" onclick="switchTab('agents')">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+      Agents
+    </div>
+    <div class="nav-item" data-tab="tasks" onclick="switchTab('tasks')">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+      Tasks
+    </div>
+  </nav>
+
+  <main class="main">
+
+    <!-- ─── Overview ─── -->
+    <div class="tab-panel active" id="panel-overview">
+      <div class="stats-grid" id="statsGrid">
+        <div class="stat-card">
+          <div class="label">Total Agents</div>
+          <div class="value" id="statTotalAgents">—</div>
+          <div class="sub" id="statOnlineAgents">— online</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Active Tasks</div>
+          <div class="value" id="statActiveTasks">—</div>
+          <div class="sub">pending + in_progress</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Running Orchs</div>
+          <div class="value yellow" id="statOrchs">—</div>
+          <div class="sub">active orchestrations</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Skills</div>
+          <div class="value green" id="statSkills">—</div>
+          <div class="sub">registered</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Events/min</div>
+          <div class="value" id="statEventsMin">0</div>
+          <div class="sub">last 60s</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Health</div>
+          <div class="value green" id="statHealth">OK</div>
+          <div class="sub">system status</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <span class="section-title">Recent Events</span>
+        </div>
+        <div class="section-body">
+          <div id="recentEvents"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Events ─── -->
+    <div class="tab-panel" id="panel-events">
+      <div class="section">
+        <div class="section-header">
+          <span class="section-title">Live Event Stream</span>
+          <div class="filters">
+            <select class="filter-select" id="eventTypeFilter" onchange="applyEventFilter()">
+              <option value="">All Types</option>
+              <option value="agent.registered">Agent Registered</option>
+              <option value="agent.deregistered">Agent Deregistered</option>
+              <option value="agent.status_changed">Agent Status Changed</option>
+              <option value="task.created">Task Created</option>
+              <option value="task.completed">Task Completed</option>
+              <option value="task.failed">Task Failed</option>
+              <option value="orchestration.created">Orchestration Created</option>
+              <option value="orchestration.phase_changed">Phase Changed</option>
+              <option value="skill.registered">Skill Registered</option>
+              <option value="message.sent">Message Sent</option>
+              <option value="session.created">Session Created</option>
+            </select>
+            <select class="filter-select" id="eventWsFilter" onchange="applyEventFilter()">
+              <option value="">All Workspaces</option>
+            </select>
+          </div>
+        </div>
+        <div class="event-list" id="eventList"></div>
+      </div>
+    </div>
+
+    <!-- ─── Orchestrations ─── -->
+    <div class="tab-panel" id="panel-orchs">
+      <div class="section">
+        <div class="section-header">
+          <span class="section-title">Orchestrations</span>
+        </div>
+        <div class="section-body" style="padding:0">
+          <div id="orchsTable"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Agents ─── -->
+    <div class="tab-panel" id="panel-agents">
+      <div class="section">
+        <div class="section-header">
+          <span class="section-title">Registered Agents</span>
+        </div>
+        <div class="section-body" style="padding:0">
+          <div id="agentsTable"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Tasks ─── -->
+    <div class="tab-panel" id="panel-tasks">
+      <div class="section">
+        <div class="section-header">
+          <span class="section-title">Tasks</span>
+          <div class="filters">
+            <select class="filter-select" id="taskStatusFilter" onchange="applyTaskFilter()">
+              <option value="">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="in_progress">In Progress</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+        </div>
+        <div class="section-body" style="padding:0">
+          <div id="tasksTable"></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+const API_BASE = '/api/collab/v1';
+let sseConnection = null;
+let wsConnection = null;
+let eventCount = 0;
+let eventCountWindow = [];
+let events = [];
+let agents = [];
+let tasks = [];
+let orchestrations = [];
+let workspaces = [];
+let currentTab = 'overview';
+
+// ─── Helpers ───
+function el(id) { return document.getElementById(id); }
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelector(`.nav-item[data-tab="${tab}"]`).classList.add('active');
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  el(`panel-${tab}`).classList.add('active');
+}
+
+function phaseClass(phase) {
+  const map = {
+    'planning': 'phase-planning',
+    'decomposing': 'phase-planning',
+    'executing': 'phase-executing',
+    'reviewing': 'phase-reviewing',
+    'completing': 'phase-completing',
+    'completed': 'phase-completing',
+    'failed': 'phase-failed',
+    'cancelled': 'phase-failed',
+  };
+  return map[phase?.toLowerCase()] || 'phase-planning';
+}
+
+function statusClass(status) {
+  const map = {
+    'online': 'status-online',
+    'offline': 'status-offline',
+    'busy': 'status-busy',
+    'error': 'status-error',
+  };
+  return map[status?.toLowerCase()] || 'status-offline';
+}
+
+function eventTypeClass(type) {
+  if (!type) return 'system';
+  if (type.startsWith('agent')) return 'agent';
+  if (type.startsWith('task')) return 'task';
+  if (type.startsWith('orchestration') || type.startsWith('orch')) return 'orch';
+  if (type.startsWith('skill')) return 'skill';
+  return 'system';
+}
+
+function badgeClass(type) {
+  if (!type) return '';
+  if (type.includes('created')) return 'event-badge badge-created';
+  if (type.includes('completed')) return 'event-badge badge-completed';
+  if (type.includes('failed')) return 'event-badge badge-failed';
+  if (type.includes('registered') || type.includes('enabled')) return 'event-badge badge-registered';
+  if (type.includes('phase') || type.includes('changed')) return 'event-badge badge-phase';
+  return 'event-badge';
+}
+
+function timeAgo(ts) {
+  if (!ts) return '—';
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  return `${Math.floor(diff / 3600000)}h ago`;
+}
+
+function fmtTime(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleTimeString();
+}
+
+// ─── Load initial data ───
+async function loadInitialData() {
+  try {
+    // Load workspaces
+    let wsData = await fetch(`${API_BASE}/workspaces`).then(r => r.json()).catch(() => ({ workspaces: [] }));
+    workspaces = wsData.workspaces || [];
+    populateWorkspaceFilter();
+
+    // Load agents
+    let agentData = await fetch(`${API_BASE}/agents`).then(r => r.json()).catch(() => ({ agents: [] }));
+    agents = agentData.agents || [];
+    updateStats();
+    renderAgents();
+
+    // Load tasks
+    let taskData = await fetch(`${API_BASE}/tasks`).then(r => r.json()).catch(() => ({ tasks: [] }));
+    tasks = taskData.tasks || [];
+    updateStats();
+    renderTasks();
+
+    // Load orchestrations
+    let orchData = await fetch(`${API_BASE}/orchestrations`).then(r => r.json()).catch(() => ({ orchestrations: [] }));
+    orchestrations = orchData.orchestrations || [];
+    updateStats();
+    renderOrchestrations();
+
+    // Load skills
+    let skillData = await fetch(`${API_BASE}/skills`).then(r => r.json()).catch(() => ({ skills: [] }));
+    el('statSkills').textContent = (skillData.skills || []).length;
+
+    updateConnectionStatus('connected');
+  } catch (e) {
+    updateConnectionStatus('offline');
+  }
+}
+
+function populateWorkspaceFilter() {
+  const select = el('eventWsFilter');
+  workspaces.forEach(ws => {
+    const opt = document.createElement('option');
+    opt.value = ws.workspace_id;
+    opt.textContent = ws.name || ws.workspace_id;
+    select.appendChild(opt);
+  });
+  if (workspaces.length > 0) {
+    el('wsName').textContent = workspaces[0].name || workspaces[0].workspace_id;
+  }
+}
+
+// ─── SSE Connection ───
+function connectSSE() {
+  const params = new URLSearchParams();
+  params.set('timeout', '60');
+  const wsFilter = el('eventWsFilter')?.value;
+  if (wsFilter) params.set('workspace_id', wsFilter);
+
+  sseConnection = new EventSource(`${API_BASE}/events?${params}`);
+
+  sseConnection.onopen = () => updateConnectionStatus('connected');
+
+  sseConnection.onerror = () => {
+    updateConnectionStatus('offline');
+    setTimeout(connectSSE, 3000);
+  };
+
+  sseConnection.onmessage = (e) => {
+    // Ignore heartbeat comments
+    if (!e.data || e.data.startsWith(':')) return;
+    try {
+      const event = JSON.parse(e.data);
+      handleEvent(event);
+    } catch (err) {}
+  };
+}
+
+function handleEvent(event) {
+  // Track event counts per minute
+  const now = Date.now();
+  eventCountWindow.push(now);
+  eventCountWindow = eventCountWindow.filter(t => now - t < 60000);
+  el('statEventsMin').textContent = eventCountWindow.length;
+
+  events.unshift(event);
+  if (events.length > 500) events = events.slice(0, 500);
+  eventCount++;
+  el('eventCount').textContent = eventCount;
+
+  // Update stats based on event type
+  const etype = event.event_type || event.type;
+  if (etype === 'agent.registered') {
+    if (event.payload?.agent_id) {
+      agents.push(event.payload);
+      renderAgents();
+      updateStats();
+    }
+  } else if (etype === 'task.created') {
+    if (event.payload?.task) {
+      tasks.push(event.payload.task);
+      renderTasks();
+      updateStats();
+    }
+  } else if (etype === 'task.completed') {
+    const t = tasks.find(t => t.task_id === event.payload?.task_id);
+    if (t) { t.status = 'completed'; renderTasks(); updateStats(); }
+  } else if (etype === 'orchestration.created') {
+    if (event.payload?.orchestration) {
+      orchestrations.push(event.payload.orchestration);
+      renderOrchestrations();
+      updateStats();
+    }
+  }
+
+  renderRecentEvents();
+}
+
+// ─── Connection status ───
+function updateConnectionStatus(status) {
+  const dot = el('connDot');
+  const label = el('connLabel');
+  if (status === 'connected') {
+    dot.classList.remove('offline');
+    label.textContent = 'Live';
+  } else {
+    dot.classList.add('offline');
+    label.textContent = 'Offline';
+  }
+}
+
+// ─── Update stats ───
+function updateStats() {
+  const online = agents.filter(a => a.status === 'online').length;
+  const activeTasks = tasks.filter(t => ['pending', 'in_progress'].includes(t.status)).length;
+  const runningOrchs = orchestrations.filter(o => !['completed', 'failed', 'cancelled'].includes(o.phase)).length;
+
+  el('statTotalAgents').textContent = agents.length;
+  el('statOnlineAgents').textContent = `${online} online`;
+  el('statActiveTasks').textContent = activeTasks;
+  el('statOrchs').textContent = runningOrchs;
+}
+
+// ─── Render functions ───
+function renderRecentEvents() {
+  const container = el('recentEvents');
+  if (events.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">⚡</div>Waiting for events…</div>';
+    return;
+  }
+  const recent = events.slice(0, 20);
+  container.innerHTML = recent.map(ev => {
+    const etype = ev.event_type || ev.type || 'unknown';
+    return `<div class="event-item">
+      <span class="event-time">${timeAgo(ev.timestamp)}</span>
+      <span class="event-type ${eventTypeClass(etype)}">${etype}</span>
+      <span class="event-payload">${JSON.stringify(ev.payload || {}).slice(0, 80)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderAgents() {
+  const container = el('agentsTable');
+  if (agents.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">🤖</div>No agents registered</div>';
+    return;
+  }
+  container.innerHTML = `<table>
+    <thead><tr><th>Status</th><th>Name</th><th>Role</th><th>Skills</th><th>Updated</th></tr></thead>
+    <tbody>
+      ${agents.map(a => `<tr>
+        <td><span class="status-dot ${statusClass(a.status)}"></span>${a.status || 'offline'}</td>
+        <td><b>${a.name || a.agent_id}</b></td>
+        <td>${a.role || '—'}</td>
+        <td>${(a.skills || []).slice(0, 3).map(s => `<span style="background:var(--surface2);padding:1px 6px;border-radius:4px;font-size:11px;margin-right:4px">${s}</span>`).join('')}</td>
+        <td>${timeAgo(a.updated_at)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function renderTasks() {
+  const container = el('tasksTable');
+  const statusFilter = el('taskStatusFilter')?.value || '';
+  const filtered = statusFilter ? tasks.filter(t => t.status === statusFilter) : tasks;
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">📋</div>No tasks</div>';
+    return;
+  }
+  container.innerHTML = `<table>
+    <thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Updated</th></tr></thead>
+    <tbody>
+      ${filtered.map(t => `<tr>
+        <td>${t.title || t.task_id}</td>
+        <td><span class="phase-badge ${t.status === 'completed' ? 'badge-completed' : t.status === 'failed' ? 'badge-failed' : 'badge-phase'}">${t.status}</span></td>
+        <td>${t.priority || 'medium'}</td>
+        <td>${t.assignee_id || '—'}</td>
+        <td>${timeAgo(t.updated_at)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function renderOrchestrations() {
+  const container = el('orchsTable');
+  if (orchestrations.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">🔄</div>No orchestrations</div>';
+    return;
+  }
+  container.innerHTML = `<table>
+    <thead><tr><th>ID</th><th>Phase</th><th>Tasks</th><th>Created</th></tr></thead>
+    <tbody>
+      ${orchestrations.map(o => `<tr>
+        <td><b>${o.orchestration_id || o.orch_id || '—'}</b></td>
+        <td><span class="phase-badge ${phaseClass(o.phase)}">${o.phase || 'planning'}</span></td>
+        <td>${(o.subtasks || []).length} subtasks</td>
+        <td>${timeAgo(o.created_at)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+// ─── Filters ───
+function applyEventFilter() {
+  const typeFilter = el('eventTypeFilter')?.value || '';
+  const wsFilter = el('eventWsFilter')?.value || '';
+  renderEventList(typeFilter, wsFilter);
+}
+
+function renderEventList(typeFilter, wsFilter) {
+  const container = el('eventList');
+  let filtered = events;
+  if (typeFilter) filtered = filtered.filter(e => (e.event_type || e.type) === typeFilter);
+  if (wsFilter) filtered = filtered.filter(e => e.workspace_id === wsFilter);
+  filtered = filtered.slice(0, 100);
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">⚡</div>No events match filter</div>';
+    return;
+  }
+  container.innerHTML = filtered.map(ev => {
+    const etype = ev.event_type || ev.type || 'unknown';
+    return `<div class="event-item">
+      <span class="event-time">${fmtTime(ev.timestamp)}</span>
+      <span class="event-type ${eventTypeClass(etype)}">${etype}</span>
+      <span class="event-payload">${JSON.stringify(ev.payload || {}).slice(0, 100)}</span>
+    </div>`;
+  }).join('');
+}
+
+function applyTaskFilter() {
+  renderTasks();
+}
+
+// ─── Init ───
+loadInitialData().then(() => connectSSE());
+</script>
+</body>
+</html>
