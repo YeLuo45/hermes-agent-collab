@@ -54,6 +54,7 @@ except ImportError:
     from collaboration.redacting_filter import SecretRedactingFilter
     from collaboration.tenant_context import TenantContext, TenantIsolationMiddleware, require_workspace_access, require_admin
     from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
+    from collaboration.audit_logger import AuditLogger, Actor as AuditActor, Target as AuditTarget
 except ImportError:
     from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
     from collaboration.task_graph import (
@@ -64,6 +65,7 @@ except ImportError:
     from collaboration.redacting_filter import SecretRedactingFilter
     from collaboration.tenant_context import TenantContext, TenantIsolationMiddleware, require_workspace_access, require_admin
     from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
+    from collaboration.audit_logger import AuditLogger, Actor as AuditActor, Target as AuditTarget
 
 # Base path for collaboration data
 COLLAB_BASE = Path("~/.hermes/collab").expanduser()
@@ -2475,3 +2477,101 @@ async def get_workspace_usage(workspace_id: str):
             for k, v in usage.items()
         ],
     }
+
+
+# =============================================================================
+# Audit Log Endpoints
+# =============================================================================
+
+_audit_logger: AuditLogger | None = None
+
+
+def _get_audit_logger() -> AuditLogger:
+    global _audit_logger
+    if _audit_logger is None:
+        _audit_logger = AuditLogger()
+    return _audit_logger
+
+
+def _log_audit(
+    workspace_id: str,
+    actor_type: str,
+    actor_id: str,
+    action: str,
+    target_type: str,
+    target_id: str,
+    changes: dict | None = None,
+    metadata: dict | None = None,
+) -> str:
+    """Helper to log an audit event. Returns event_id."""
+    audit = _get_audit_logger()
+    event = AuditLogger.event(
+        actor=AuditActor(type=actor_type, id=actor_id, workspace_id=workspace_id),
+        action=action,
+        target=AuditTarget(type=target_type, id=target_id),
+        changes=changes or {},
+        metadata=metadata or {},
+    )
+    return audit.log(event)
+
+
+class AuditQueryParams(BaseModel):
+    workspace_id: str | None = None
+    actor_id: str | None = None
+    action: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    limit: int = 100
+
+
+@router.get("/audit/logs")
+async def query_audit_logs(params: AuditQueryParams = Depends()):
+    """Query audit log entries with filters."""
+    audit = _get_audit_logger()
+    start_dt = None
+    end_dt = None
+    if params.start_time:
+        from datetime import datetime
+        start_dt = datetime.fromisoformat(params.start_time.replace("Z", "+00:00"))
+    if params.end_time:
+        from datetime import datetime
+        end_dt = datetime.fromisoformat(params.end_time.replace("Z", "+00:00"))
+    events = audit.query(
+        workspace_id=params.workspace_id,
+        actor_id=params.actor_id,
+        action=params.action,
+        start_time=start_dt,
+        end_time=end_dt,
+        limit=params.limit,
+    )
+    return {
+        "events": [
+            {
+                "event_id": e.event_id,
+                "timestamp": e.timestamp,
+                "actor": {"type": e.actor.type, "id": e.actor.id, "workspace_id": e.actor.workspace_id},
+                "action": e.action,
+                "target": {"type": e.target.type, "id": e.target.id},
+                "changes": e.changes,
+                "metadata": e.metadata,
+            }
+            for e in events
+        ],
+        "count": len(events),
+    }
+
+
+@router.get("/audit/workspaces")
+async def list_audited_workspaces():
+    """List workspace IDs that have audit logs."""
+    audit = _get_audit_logger()
+    return {"workspaces": audit.list_workspaces()}
+
+
+@router.get("/audit/verify/{workspace_id}")
+async def verify_audit_integrity(workspace_id: str, date: str | None = None):
+    """Verify hash chain integrity for a workspace."""
+    require_admin()
+    audit = _get_audit_logger()
+    ok = audit.verify_integrity(workspace_id, date)
+    return {"workspace_id": workspace_id, "date": date, "integrity_ok": ok}
