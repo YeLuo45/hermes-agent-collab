@@ -778,6 +778,7 @@ class HookEvent(str, Enum):
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     TASK_PHASE_CHANGED = "task.phase_changed"
+    TASK_STATUS_CHANGED = "task.status_changed"
 
     # Orchestration lifecycle
     ORCHESTRATION_CREATED = "orchestration.created"
@@ -792,6 +793,8 @@ class HookEvent(str, Enum):
     # System
     WORKSPACE_INITIALIZED = "workspace.initialized"
     SYSTEM_READY = "system.ready"
+    HOOK_EMITTED = "hook.emitted"
+    HOOK_FAILED = "hook.failed"
 
     # Multi-Agent Protocol (Direction E)
     MESSAGE_SENT = "message.sent"

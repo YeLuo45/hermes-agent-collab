@@ -968,6 +968,17 @@ async def get_health():
     return monitor.get_system_health()
 
 
+@router.get("/metrics")
+async def get_metrics():
+    """Prometheus /metrics endpoint.
+
+    Returns metrics in Prometheus text exposition format.
+    """
+    from collaboration.metrics import get_metrics_output, get_content_type
+    from starlette.responses import Response
+    return Response(content=get_metrics_output(), media_type=get_content_type())
+
+
 @router.get("/monitor/events")
 async def get_events(
     event_type: Optional[str] = None,
