@@ -453,6 +453,23 @@ def get_storage_backend(workspace_path: Path, model_type: type[T], json_filename
         }
         table_name = table_map.get(json_filename)
         return SQLiteStore(db_path, model_type, table_name)
+    elif backend == "postgres":
+        from collaboration.postgres_storage import PostgreSQLStore, _build_dsn, _TABLE_MAP
+        config_path = workspace_path / "config.json"
+        pg_config = {"host": "localhost", "port": 5432, "database": "hermes_collab",
+                     "user": "hermes", "password": ""}
+        if config_path.exists():
+            try:
+                full_config = json.loads(config_path.read_text())
+                pg_config.update(full_config.get("postgres", {}))
+            except Exception:
+                pass
+        dsn = _build_dsn(pg_config)
+        pool_size = pg_config.get("pool_size", 10)
+        table_name = _TABLE_MAP.get(json_filename)
+        if table_name is None:
+            raise ValueError(f"No PostgreSQL table mapping for {json_filename!r}")
+        return PostgreSQLStore(dsn, model_type, table_name, pool_size=pool_size)
     else:
         return JsonFileStore(workspace_path / json_filename, model_type)
 
