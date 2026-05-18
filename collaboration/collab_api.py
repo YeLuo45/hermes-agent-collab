@@ -1768,3 +1768,160 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         _log.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
+
+
+# =============================================================================
+# Admin: Config Hot-Reload Endpoints
+# =============================================================================
+
+class ConfigReloadRequest(BaseModel):
+    source: str = "file"  # "file" | "inline"
+    path: str | None = None
+    values: dict | None = None
+
+
+class ConfigReloadResponse(BaseModel):
+    status: str
+    reload_id: str
+    changed_keys: list[str]
+    old_values: dict
+    new_values: dict
+    timestamp: str
+
+
+def _mask_config(config: Any) -> dict:
+    """Return a sanitized dict of the current config (hide secrets)."""
+    import dataclasses
+    result = {}
+    secrets = {"JWT_SECRET", "POSTGRES_PASSWORD", "REDIS_PASSWORD", "API_KEY"}
+    if dataclasses.is_dataclass(config):
+        for f in dataclasses.fields(config):
+            v = getattr(config, f.name)
+            if f.name in secrets and v:
+                result[f.name] = "***REDACTED***"
+            else:
+                result[f.name] = v
+    elif isinstance(config, dict):
+        for k, v in config.items():
+            if k in secrets and v:
+                result[k] = "***REDACTED***"
+            else:
+                result[k] = v
+    return result
+
+
+@router.get("/admin/config", tags=["admin"])
+async def get_config():
+    """Return the current configuration (sanitized)."""
+    from collaboration.config import get_config
+    from collaboration.config_hotreload import get_hot_reload_service
+
+    config = get_config()
+    service = get_hot_reload_service()
+
+    result = _mask_config(config)
+    if service and service.last_diff:
+        diff = service.last_diff
+        result["_last_reload"] = {
+            "reload_id": diff.reload_id,
+            "changed_keys": diff.changed_keys,
+            "requester": diff.requester,
+        }
+    return result
+
+
+@router.post("/admin/config/reload", response_model=ConfigReloadResponse, tags=["admin"])
+async def reload_config(req: ConfigReloadRequest):
+    """
+    Trigger a hot-reload of the configuration.
+
+    source=file: reload from a YAML/JSON file at `path`
+    source=inline: reload from inline `values` dict (JSON patch semantics)
+    """
+    from collaboration.config import CollabConfig, get_config
+    from collaboration.config_hotreload import get_hot_reload_service
+    from datetime import datetime, timezone
+    import uuid
+
+    service = get_hot_reload_service()
+    if service is None:
+        raise HTTPException(status_code=503, detail="Hot-reload service not initialized")
+
+    # Build new config
+    if req.source == "file":
+        if not req.path:
+            raise HTTPException(status_code=400, detail="path is required when source=file")
+        new_config = _load_config_from_file(req.path)
+    elif req.source == "inline":
+        if not req.values:
+            raise HTTPException(status_code=400, detail="values is required when source=inline")
+        # Start from current config and apply inline values
+        current = get_config()
+        new_config = _apply_inline_config(current, req.values)
+    else:
+        raise HTTPException(status_code=400, detail="source must be 'file' or 'inline'")
+
+    # Perform reload
+    diff = await service.reload(new_config, requester="REST_API")
+
+    return ConfigReloadResponse(
+        status="reloaded",
+        reload_id=diff.reload_id,
+        changed_keys=diff.changed_keys,
+        old_values=diff.old_values,
+        new_values=diff.new_values,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@router.get("/admin/config/diff", tags=["admin"])
+async def get_config_diff():
+    """Return the last config reload diff."""
+    from collaboration.config_hotreload import get_hot_reload_service
+
+    service = get_hot_reload_service()
+    if service is None:
+        raise HTTPException(status_code=503, detail="Hot-reload service not initialized")
+    last = service.last_diff
+    if last is None:
+        return {"diff": None}
+    return {
+        "diff": {
+            "reload_id": last.reload_id,
+            "changed_keys": last.changed_keys,
+            "old_values": last.old_values,
+            "new_values": last.new_values,
+            "requester": last.requester,
+        }
+    }
+
+
+# ---- Helpers ----
+
+import json
+import yaml
+
+
+def _load_config_from_file(path: str) -> dict:
+    """Load config dict from a YAML or JSON file."""
+    with open(path, "r") as f:
+        if path.endswith(".json"):
+            return json.load(f)
+        return yaml.safe_load(f) or {}
+
+
+def _apply_inline_config(current: Any, values: dict) -> dict:
+    """Create a new config dict by applying inline values to the current config."""
+    import dataclasses
+
+    if dataclasses.is_dataclass(current):
+        result = {}
+        for f in dataclasses.fields(current):
+            if f.name in values:
+                result[f.name] = values[f.name]
+            else:
+                result[f.name] = getattr(current, f.name)
+        return result
+    result = dict(current)
+    result.update(values)
+    return result

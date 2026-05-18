@@ -63,6 +63,10 @@ def get_web_dist() -> Path:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager: start/stop message bus consumer with the app."""
+    from collaboration.config import get_config
+    from collaboration.config_hotreload import init_hot_reload_service
+    from collaboration.events import get_event_bus
+
     bus = get_event_bus()
     channel_registry = ChannelRegistry()
     channel_registry.register(WebSocketChannelAdapter(), workspace_id=None)
@@ -71,7 +75,21 @@ async def lifespan(app: FastAPI):
     channel_registry.register(http_adapter, workspace_id=None)
     bus.set_channel_registry(channel_registry)
     bus._start_consumer()
+
+    # Initialize hot-reload service
+    config = get_config()
+    service = init_hot_reload_service(config, bus)
+    service.setup_watcher(
+        path=config.CONFIG_PATH,
+        poll_interval=config.CONFIG_POLL_INTERVAL,
+        enabled=config.CONFIG_WATCH_ENABLED,
+    )
+    service.setup_reloader(enabled=config.CONFIG_SIGNAL_ENABLED)
+    await service.start()
+
     yield
+
+    await service.stop()
     bus._stop_consumer()
 
 

@@ -79,6 +79,13 @@ class CollabConfig:
     TRACING_OTLP_ENDPOINT: str = "http://localhost:4317"
     TRACING_SAMPLE_RATE: float = 1.0
 
+    # === Hot Reload ===
+    CONFIG_WATCH_ENABLED: bool = False
+    CONFIG_PATH: str = "/etc/hermes/collab.yaml"
+    CONFIG_POLL_INTERVAL: float = 5.0
+    CONFIG_SIGNAL_ENABLED: bool = True
+    CONFIG_API_ENABLED: bool = True
+
     def __post_init__(self):
         if self.CHANNEL_ADAPTERS is None:
             self.CHANNEL_ADAPTERS = ["redis_stream", "redis_pubsub", "sse"]
@@ -162,6 +169,21 @@ class CollabConfig:
         sample = os.getenv("TRACING_SAMPLE_RATE")
         if sample:
             self.TRACING_SAMPLE_RATE = float(sample)
+
+        # Hot Reload
+        watch_env = os.getenv("CONFIG_WATCH_ENABLED")
+        if watch_env is not None:
+            self.CONFIG_WATCH_ENABLED = watch_env.lower() in ("true", "1", "yes")
+        self.CONFIG_PATH = os.getenv("CONFIG_PATH", self.CONFIG_PATH)
+        poll = os.getenv("CONFIG_POLL_INTERVAL")
+        if poll:
+            self.CONFIG_POLL_INTERVAL = float(poll)
+        sig_env = os.getenv("CONFIG_SIGNAL_ENABLED")
+        if sig_env is not None:
+            self.CONFIG_SIGNAL_ENABLED = sig_env.lower() in ("true", "1", "yes")
+        api_env = os.getenv("CONFIG_API_ENABLED")
+        if api_env is not None:
+            self.CONFIG_API_ENABLED = api_env.lower() in ("true", "1", "yes")
 
 
 # Global singleton
