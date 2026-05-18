@@ -16,6 +16,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - CHANNEL_ADAPTERS=redis_stream,redis_pubsub,sse
       - API_KEY_SECRET=${API_KEY_SECRET:?API_KEY_SECRET is required}
     volumes:
       - hermes_data:/home/hermes/.hermes

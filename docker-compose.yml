@@ -18,6 +18,7 @@ services:
       - POSTGRES_PASSWORD=hermes_secret
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - CHANNEL_ADAPTERS=redis_stream,redis_pubsub,sse
     volumes:
       - hermes_data:/home/hermes/.hermes
       - ./dashboard:/app/dashboard:ro
@@ -59,6 +60,11 @@ services:
     container_name: hermes_redis
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - hermes_net
