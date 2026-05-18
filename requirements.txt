@@ -35,6 +35,12 @@ grpcio-tools>=1.60.0
 jsonschema>=4.20.0
 referencing>=0.30.0
 
+# Distributed tracing (Direction AG)
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp>=1.20.0
+opentelemetry-instrumentation-fastapi>=0.41b0
+
 # Dev Dependencies
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

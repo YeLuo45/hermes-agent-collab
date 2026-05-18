@@ -33,7 +33,8 @@ try:
         TaskGraphResponse, TopologicalSortResponse, ExecutionPlan,
         UpstreamDownstreamResponse,
     )
-    from .operation_transform import OTEngine, get_ot_engine
+    from collaboration.operation_transform import OTEngine, get_ot_engine
+    from collaboration.distributed_tracing import TracingManager, get_tracing_manager, with_trace
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -59,6 +60,7 @@ except ImportError:
     from collaboration.template_market import TemplateMarket, WorkflowTemplate, Author, TemplateListing
     from collaboration.collab_edit_session import CollabEditSessionManager, Participant, Operation
     from collaboration.operation_transform import OTEngine, get_ot_engine
+    from collaboration.distributed_tracing import TracingManager, get_tracing_manager, with_trace
 except ImportError:
     from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
     from collaboration.task_graph import (
@@ -71,6 +73,9 @@ except ImportError:
     from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
     from collaboration.audit_logger import AuditLogger, Actor as AuditActor, Target as AuditTarget
     from collaboration.template_market import TemplateMarket, WorkflowTemplate, Author, TemplateListing
+    from collaboration.collab_edit_session import CollabEditSessionManager, Participant, Operation
+    from collaboration.operation_transform import OTEngine, get_ot_engine
+    from collaboration.distributed_tracing import TracingManager, get_tracing_manager, with_trace
 
 # Base path for collaboration data
 COLLAB_BASE = Path("~/.hermes/collab").expanduser()
