@@ -31,6 +31,10 @@ cryptography>=41.0.0
 grpcio>=1.60.0
 grpcio-tools>=1.60.0
 
+# Config validation (Direction AC)
+jsonschema>=4.20.0
+referencing>=0.30.0
+
 # Dev Dependencies
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

@@ -8,6 +8,7 @@ import os
 from typing import Any, Callable
 
 from collaboration.config_diff import ConfigDiff, compute_diff
+from collaboration.config_validator import ConfigSchemaValidator
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class ConfigHotReloadService:
 
     async def reload(self, new_config: Any, requester: str = "API") -> ConfigDiff:
         """
-        Reload configuration: compute diff from current → new, notify components.
+        Reload configuration: compute diff, validate, notify components.
 
         Returns the ConfigDiff.
         """
@@ -118,6 +119,20 @@ class ConfigHotReloadService:
             if not diff.changed_keys:
                 logger.info("Config reload: no changes detected")
                 return diff
+
+            # Validate changed keys before applying
+            validator = ConfigSchemaValidator()
+            validation = validator.validate_partial(
+                new_config if hasattr(new_config, "__dict__") else dict(new_config or {}),
+                diff.changed_keys,
+            )
+            if not validation.valid:
+                logger.error(
+                    "Config reload REJECTED — validation failed (requester=%s): %s",
+                    requester,
+                    validation.error_summary,
+                )
+                raise ValueError(f"Config validation failed: {validation.error_summary}")
 
             logger.info(
                 "Config reload: %d keys changed (requester=%s): %s",
