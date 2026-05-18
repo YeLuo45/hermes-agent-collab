@@ -33,6 +33,7 @@ try:
         TaskGraphResponse, TopologicalSortResponse, ExecutionPlan,
         UpstreamDownstreamResponse,
     )
+    from .operation_transform import OTEngine, get_ot_engine
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -56,6 +57,8 @@ except ImportError:
     from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
     from collaboration.audit_logger import AuditLogger, Actor as AuditActor, Target as AuditTarget
     from collaboration.template_market import TemplateMarket, WorkflowTemplate, Author, TemplateListing
+    from collaboration.collab_edit_session import CollabEditSessionManager, Participant, Operation
+    from collaboration.operation_transform import OTEngine, get_ot_engine
 except ImportError:
     from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
     from collaboration.task_graph import (
@@ -2750,3 +2753,199 @@ async def install_from_url(url: str, workspace_id: str):
         return {"workflow_id": workflow_id, "installed": True}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# Collaborative Edit Endpoints (REST) + WebSocket
+# =============================================================================
+
+_session_manager: CollabEditSessionManager | None = None
+
+
+def _get_session_manager() -> CollabEditSessionManager:
+    global _session_manager
+    if _session_manager is None:
+        _session_manager = CollabEditSessionManager()
+    return _session_manager
+
+
+class JoinSessionRequest(BaseModel):
+    user_id: str
+    name: str = ""
+
+
+class OperationRequest(BaseModel):
+    user_id: str
+    op_type: str = "replace"
+    path: str = ""
+    value: Any = None
+    old_value: Any = None
+
+
+class CursorUpdateRequest(BaseModel):
+    user_id: str
+    cursor_position: dict = {}
+    selection: dict | None = None
+
+
+@router.post("/collab/{resource_type}/{resource_id}/session")
+async def create_or_join_session(resource_type: str, resource_id: str, req: JoinSessionRequest):
+    """
+    Create or join a collaborative editing session for a resource.
+    Returns session state including all participants.
+    """
+    manager = _get_session_manager()
+    session = manager.get_or_create(resource_type, resource_id, req.user_id, req.name)
+    return session.get_state()
+
+
+@router.get("/collab/sessions")
+async def list_collab_sessions():
+    """List all active collaborative editing sessions."""
+    manager = _get_session_manager()
+    return {"sessions": manager.list_active()}
+
+
+@router.get("/collab/sessions/{session_id}")
+async def get_session(session_id: str):
+    """Get a session by ID."""
+    manager = _get_session_manager()
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session.get_state()
+
+
+@router.post("/collab/sessions/{session_id}/operation")
+async def apply_operation(session_id: str, req: OperationRequest):
+    """
+    Apply an operation to a session.
+    The operation is transformed against concurrent operations via OT.
+    """
+    manager = _get_session_manager()
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    op = Operation(
+        user_id=req.user_id,
+        op_type=req.op_type,
+        path=req.path,
+        value=req.value,
+        old_value=req.old_value,
+    )
+    session = manager.apply_operation(session_id, op)
+    return {
+        "op_id": op.op_id,
+        "version": session.version if session else 0,
+        "applied": True,
+    }
+
+
+@router.post("/collab/sessions/{session_id}/leave")
+async def leave_session(session_id: str, user_id: str):
+    """Leave a collaborative session."""
+    manager = _get_session_manager()
+    still_active = manager.leave(session_id, user_id)
+    return {"session_id": session_id, "user_id": user_id, "session_still_active": still_active}
+
+
+@router.post("/collab/sessions/{session_id}/cursor")
+async def update_cursor(session_id: str, req: CursorUpdateRequest):
+    """Update cursor position in a session."""
+    manager = _get_session_manager()
+    ok = manager.update_cursor(session_id, req.user_id, req.cursor_position, req.selection)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Session or participant not found")
+    return {"updated": True}
+
+
+@router.get("/collab/sessions/{session_id}/operations")
+async def get_session_operations(session_id: str, from_version: int = 0):
+    """Get operations since version for client sync."""
+    manager = _get_session_manager()
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    ops = session.get_operations_since(from_version)
+    return {"operations": [op.to_dict() for op in ops], "version": session.version}
+
+
+@router.websocket("/ws/collab/{resource_type}/{resource_id}")
+async def websocket_collab_edit(
+    websocket: WebSocket,
+    resource_type: str,
+    resource_id: str,
+):
+    """
+    WebSocket endpoint for real-time collaborative editing.
+    Upgrade required — FastAPI handles WebSocket disconnections gracefully.
+    """
+    await websocket.accept()
+
+    manager = _get_session_manager()
+    session = None
+    user_id = None
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            msg_type = msg.get("type", "")
+
+            if msg_type == "join":
+                user_id = msg.get("user_id", "")
+                name = msg.get("name", "")
+                session = manager.get_or_create(resource_type, resource_id, user_id, name)
+                await websocket.send_json({
+                    "type": "joined",
+                    "session": session.get_state(),
+                    "participants": list(session.participants.values()),
+                })
+
+            elif msg_type == "operation":
+                if session is None:
+                    await websocket.send_json({"type": "error", "message": "Not joined"})
+                    continue
+                op = Operation(
+                    user_id=msg.get("user_id", user_id or ""),
+                    op_type=msg.get("op_type", "replace"),
+                    path=msg.get("path", ""),
+                    value=msg.get("value"),
+                    old_value=msg.get("old_value"),
+                )
+                transformed_op, affected = session.apply_operation(op)
+
+                # Send ack to sender
+                await websocket.send_json({
+                    "type": "operation_ack",
+                    "op": transformed_op.to_dict(),
+                    "version": session.version,
+                })
+
+            elif msg_type == "cursor":
+                if session is None or not user_id:
+                    continue
+                manager.update_cursor(
+                    session.session_id,
+                    user_id,
+                    msg.get("cursor_position", {}),
+                    msg.get("selection"),
+                )
+                await websocket.send_json({
+                    "type": "cursor_acked",
+                    "user_id": user_id,
+                })
+
+            elif msg_type == "leave":
+                if session and user_id:
+                    manager.leave(session.session_id, user_id)
+                break
+
+    except WebSocketDisconnect:
+        if session and user_id:
+            manager.leave(session.session_id, user_id)
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
