@@ -1,0 +1,204 @@
+syntax = "proto3";
+
+package hermes.collab.v1;
+
+option python_generic_services = true;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// =============================================================================
+// Common
+// =============================================================================
+
+message Workspace {
+  string workspace_id = 1;
+  string name = 2;
+  string owner_id = 3;
+  string description = 4;
+  bool is_active = 5;
+  google.protobuf.Timestamp created_at = 6;
+  map<string, string> config = 7;
+}
+
+message Agent {
+  string agent_id = 1;
+  string name = 2;
+  string role = 3;
+  string status = 4;
+  string workspace_id = 5;
+  map<string, string> metadata = 6;
+  google.protobuf.Timestamp registered_at = 7;
+  google.protobuf.Timestamp last_seen_at = 8;
+}
+
+message Task {
+  string task_id = 1;
+  string title = 2;
+  string description = 3;
+  string status = 4;
+  string priority = 5;
+  string workspace_id = 6;
+  string assigned_agent = 7;
+  repeated string depends_on = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp completed_at = 11;
+  google.protobuf.Struct result = 12;
+  string error = 13;
+}
+
+message Event {
+  string event_id = 1;
+  string event_type = 2;
+  string workspace_id = 3;
+  string agent_id = 4;
+  string task_id = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  google.protobuf.Struct data = 7;
+}
+
+message TaskResult {
+  string task_id = 1;
+  bool success = 2;
+  google.protobuf.Struct result = 3;
+  string error = 4;
+  google.protobuf.Timestamp completed_at = 5;
+}
+
+// =============================================================================
+// Workspace
+// =============================================================================
+
+message CreateWorkspaceRequest {
+  string name = 1;
+  string owner_id = 2;
+  string description = 3;
+}
+
+message GetWorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message ListWorkspacesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+  int32 total = 2;
+}
+
+// =============================================================================
+// Agent
+// =============================================================================
+
+message RegisterAgentRequest {
+  string name = 1;
+  string role = 2;
+  string workspace_id = 3;
+  map<string, string> metadata = 4;
+}
+
+message GetAgentRequest {
+  string agent_id = 1;
+}
+
+message ListAgentsRequest {
+  string workspace_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListAgentsResponse {
+  repeated Agent agents = 1;
+  int32 total = 2;
+}
+
+message UpdateAgentStatusRequest {
+  string agent_id = 1;
+  string status = 2;
+}
+
+// =============================================================================
+// Task
+// =============================================================================
+
+message CreateTaskRequest {
+  string title = 1;
+  string description = 2;
+  string priority = 3;
+  string workspace_id = 4;
+  repeated string depends_on = 5;
+}
+
+message GetTaskRequest {
+  string task_id = 1;
+}
+
+message ListTasksRequest {
+  string workspace_id = 1;
+  string status = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  int32 total = 2;
+}
+
+message UpdateTaskRequest {
+  string task_id = 1;
+  string status = 2;
+  string assigned_agent = 3;
+}
+
+message CompleteTaskRequest {
+  string task_id = 1;
+  google.protobuf.Struct result = 2;
+  string error = 3;
+}
+
+// =============================================================================
+// Streaming
+// =============================================================================
+
+message StreamEventsRequest {
+  string workspace_id = 1;
+  repeated string event_types = 2;
+}
+
+message ExecuteTaskRequest {
+  string task_id = 1;
+  google.protobuf.Struct input = 2;
+}
+
+// =============================================================================
+// Collaboration Service
+// =============================================================================
+
+service CollaborationService {
+  // Workspace
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+
+  // Agent
+  rpc RegisterAgent(RegisterAgentRequest) returns (Agent);
+  rpc GetAgent(GetAgentRequest) returns (Agent);
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc UpdateAgentStatus(UpdateAgentStatusRequest) returns (Agent);
+
+  // Task
+  rpc CreateTask(CreateTaskRequest) returns (Task);
+  rpc GetTask(GetTaskRequest) returns (Task);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc UpdateTask(UpdateTaskRequest) returns (Task);
+  rpc CompleteTask(CompleteTaskRequest) returns (Task);
+
+  // Streaming
+  rpc StreamEvents(StreamEventsRequest) returns (stream Event);
+  rpc ExecuteTaskStream(ExecuteTaskRequest) returns (stream TaskResult);
+}
