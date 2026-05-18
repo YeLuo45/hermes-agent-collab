@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes_app_prod
+    environment:
+      - HERMES_HOME=/home/hermes/.hermes
+      - STORAGE_BACKEND=postgres
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=hermes_collab
+      - POSTGRES_USER=hermes
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - API_KEY_SECRET=${API_KEY_SECRET:?API_KEY_SECRET is required}
+    volumes:
+      - hermes_data:/home/hermes/.hermes
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+    networks:
+      - hermes_net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hermes_postgres_prod
+    environment:
+      POSTGRES_DB: hermes_collab
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_collab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - hermes_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: hermes_redis_prod
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: always
+    networks:
+      - hermes_net
+
+  nginx:
+    image: nginx:alpine
+    container_name: hermes_nginx_prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./dashboard:/usr/share/nginx/html:ro
+    depends_on:
+      - app
+    restart: always
+    networks:
+      - hermes_net
+
+networks:
+  hermes_net:
+    driver: bridge
+
+volumes:
+  hermes_data:
+  postgres_data:
+  redis_data:

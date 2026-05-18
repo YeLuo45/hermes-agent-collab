@@ -1,0 +1,73 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes_app
+    ports:
+      - "8000:8000"
+    environment:
+      - HERMES_HOME=/home/hermes/.hermes
+      - STORAGE_BACKEND=postgres
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=hermes_collab
+      - POSTGRES_USER=hermes
+      - POSTGRES_PASSWORD=hermes_secret
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - hermes_data:/home/hermes/.hermes
+      - ./dashboard:/app/dashboard:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - hermes_net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hermes_postgres
+    environment:
+      POSTGRES_DB: hermes_collab
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD: hermes_secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_collab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - hermes_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: hermes_redis
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - hermes_net
+
+networks:
+  hermes_net:
+    driver: bridge
+
+volumes:
+  hermes_data:
+  postgres_data:
+  redis_data:
