@@ -35,6 +35,10 @@ try:
     )
     from collaboration.operation_transform import OTEngine, get_ot_engine
     from collaboration.distributed_tracing import TracingManager, get_tracing_manager, with_trace
+    from collaboration.notification_manager import (
+        NotificationManager, NotificationEvent, make_channel,
+        ConsoleChannel, SlackChannel, EmailChannel, WebhookChannel,
+    )
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -61,6 +65,10 @@ except ImportError:
     from collaboration.collab_edit_session import CollabEditSessionManager, Participant, Operation
     from collaboration.operation_transform import OTEngine, get_ot_engine
     from collaboration.distributed_tracing import TracingManager, get_tracing_manager, with_trace
+    from collaboration.notification_manager import (
+        NotificationManager, NotificationEvent, make_channel,
+        ConsoleChannel, SlackChannel, EmailChannel, WebhookChannel,
+    )
 except ImportError:
     from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
     from collaboration.task_graph import (
@@ -76,6 +84,10 @@ except ImportError:
     from collaboration.collab_edit_session import CollabEditSessionManager, Participant, Operation
     from collaboration.operation_transform import OTEngine, get_ot_engine
     from collaboration.distributed_tracing import TracingManager, get_tracing_manager, with_trace
+    from collaboration.notification_manager import (
+        NotificationManager, NotificationEvent, make_channel,
+        ConsoleChannel, SlackChannel, EmailChannel, WebhookChannel,
+    )
 
 # Base path for collaboration data
 COLLAB_BASE = Path("~/.hermes/collab").expanduser()
@@ -2954,3 +2966,98 @@ async def websocket_collab_edit(
             await websocket.send_json({"type": "error", "message": str(e)})
         except Exception:
             pass
+
+
+# =============================================================================
+# Notification Pipeline Endpoints
+# =============================================================================
+
+_notification_manager: NotificationManager | None = None
+
+
+def _get_notification_manager() -> NotificationManager:
+    global _notification_manager
+    if _notification_manager is None:
+        _notification_manager = NotificationManager()
+    return _notification_manager
+
+
+class NotificationSendRequest(BaseModel):
+    type: str = "alert.info"
+    title: str
+    body: str = ""
+    severity: str = "info"
+    workspace_id: str | None = None
+    metadata: dict = {}
+
+
+class ChannelConfigRequest(BaseModel):
+    name: str
+    type: str = "console"
+    config: dict = {}
+
+
+@router.post("/notifications/send")
+async def send_notification(req: NotificationSendRequest):
+    """
+    Send a notification to all registered channels.
+    Returns delivery status per channel.
+    """
+    manager = _get_notification_manager()
+    event = NotificationEvent(
+        type=req.type,
+        title=req.title,
+        body=req.body,
+        severity=req.severity,
+        workspace_id=req.workspace_id,
+        metadata=req.metadata,
+    )
+    results = await manager.send(event)
+    return {"event_id": event.id, "delivered": results}
+
+
+@router.post("/notifications/channels/{channel_name}")
+async def add_channel(channel_name: str, req: ChannelConfigRequest):
+    """Register a new notification channel."""
+    manager = _get_notification_manager()
+    try:
+        channel = make_channel({"type": req.type, **req.config})
+        await manager.register_channel(channel_name, channel)
+        return {"registered": True, "name": channel_name, "type": req.type}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/notifications/channels/{channel_name}")
+async def remove_channel(channel_name: str):
+    """Unregister a notification channel."""
+    manager = _get_notification_manager()
+    removed = await manager.unregister_channel(channel_name)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return {"removed": True, "name": channel_name}
+
+
+@router.get("/notifications/channels")
+async def list_channels():
+    """List all registered notification channels."""
+    manager = _get_notification_manager()
+    return {"channels": manager.list_channels()}
+
+
+@router.post("/notifications/channels/{channel_name}/test")
+async def test_channel(channel_name: str):
+    """Send a test notification to a specific channel."""
+    manager = _get_notification_manager()
+    event = NotificationEvent(
+        type="test.ping",
+        title="Test Notification from hermes-agent-collab",
+        body="This is a test notification to verify the channel is working.",
+        severity="info",
+        metadata={"test": True},
+    )
+    sent = await manager.send_to_channel(channel_name, event)
+    if not sent:
+        raise HTTPException(status_code=502, detail="Channel delivery failed")
+    return {"delivered": True, "channel": channel_name}
+
