@@ -9,9 +9,11 @@ from typing import Optional
 
 try:
     from .models import Skill, SkillCategory
+    from .plugin_system import HookEvent, emit_hook
     from .storage import JsonFileStore
 except ImportError:
     from collaboration.models import Skill, SkillCategory
+    from collaboration.plugin_system import HookEvent, emit_hook
     from collaboration.storage import JsonFileStore
 
 
@@ -50,6 +52,12 @@ class SkillSystem:
             version=version
         )
         self.store.upsert(skill)
+        # Plugin hook: skill.registered
+        emit_hook(HookEvent.SKILL_REGISTERED, {
+            "skill_id": skill_id,
+            "name": name,
+            "category": category.value if hasattr(category, "value") else str(category),
+        }, workspace_id=self._workspace_id)
         return skill
 
     def get_skill(self, skill_id: str) -> Optional[Skill]:
@@ -94,6 +102,8 @@ class SkillSystem:
             return False
         skill.enabled = True
         self.store.upsert(skill)
+        # Plugin hook: skill.enabled
+        emit_hook(HookEvent.SKILL_ENABLED, {"skill_id": skill_id}, workspace_id=self._workspace_id)
         return True
 
     def disable_skill(self, skill_id: str) -> bool:
@@ -103,6 +113,8 @@ class SkillSystem:
             return False
         skill.enabled = False
         self.store.upsert(skill)
+        # Plugin hook: skill.disabled
+        emit_hook(HookEvent.SKILL_DISABLED, {"skill_id": skill_id}, workspace_id=self._workspace_id)
         return True
 
     def list_skills(

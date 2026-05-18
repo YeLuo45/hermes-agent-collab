@@ -759,3 +759,88 @@ def get_next_phase(current_phase: Phase, complexity: TaskComplexity, decision: R
         return Phase.REJECTED
 
     return phase_order.get(current_phase, current_phase)
+
+
+# ─── Hook/Plugin System ───────────────────────────────────────────────────────
+
+
+class HookEvent(str, Enum):
+    """Lifecycle events that plugins can subscribe to."""
+
+    # Agent lifecycle
+    AGENT_REGISTERED = "agent.registered"
+    AGENT_DEREGISTERED = "agent.deregistered"
+    AGENT_STATUS_CHANGED = "agent.status_changed"
+
+    # Task lifecycle
+    TASK_CREATED = "task.created"
+    TASK_UPDATED = "task.updated"
+    TASK_COMPLETED = "task.completed"
+    TASK_FAILED = "task.failed"
+    TASK_PHASE_CHANGED = "task.phase_changed"
+
+    # Orchestration lifecycle
+    ORCHESTRATION_CREATED = "orchestration.created"
+    ORCHESTRATION_PHASE_CHANGED = "orchestration.phase_changed"
+    ORCHESTRATION_COMPLETED = "orchestration.completed"
+
+    # Skill lifecycle
+    SKILL_REGISTERED = "skill.registered"
+    SKILL_ENABLED = "skill.enabled"
+    SKILL_DISABLED = "skill.disabled"
+
+    # System
+    WORKSPACE_INITIALIZED = "workspace.initialized"
+    SYSTEM_READY = "system.ready"
+
+
+@dataclass
+class Plugin:
+    """A plugin that subscribes to lifecycle events."""
+
+    plugin_id: str
+    name: str
+    description: str = ""
+    version: str = "1.0.0"
+    enabled: bool = True
+    hook_handlers: dict[HookEvent, list[str]] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "plugin_id": self.plugin_id,
+            "name": self.name,
+            "description": self.description,
+            "version": self.version,
+            "enabled": self.enabled,
+            "hook_handlers": {e.value: hs for e, hs in self.hook_handlers.items()},
+            "config": self.config,
+            "metadata": self.metadata,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Plugin":
+        handlers_raw = data.get("hook_handlers", {})
+        handlers = {}
+        for e_str, hs in handlers_raw.items():
+            try:
+                handlers[HookEvent(e_str)] = hs
+            except ValueError:
+                pass
+        return cls(
+            plugin_id=data["plugin_id"],
+            name=data["name"],
+            description=data.get("description", ""),
+            version=data.get("version", "1.0.0"),
+            enabled=data.get("enabled", True),
+            hook_handlers=handlers,
+            config=data.get("config", {}),
+            metadata=data.get("metadata", {}),
+            created_at=data.get("created_at", ""),
+            updated_at=data.get("updated_at", ""),
+        )

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from collaboration.events import Event, EventType, get_event_bus
 from collaboration.models import Agent, AgentRole, AgentStatus
+from collaboration.plugin_system import HookEvent, emit_hook
 from collaboration.storage import JsonFileStore, ensure_workspace_files
 
 _log = logging.getLogger(__name__)
@@ -48,6 +49,14 @@ class AgentRegistry:
             workspace_id=self.workspace_id,
             payload=agent.to_dict(),
         ))
+        # Plugin hook: agent.registered
+        emit_hook(HookEvent.AGENT_REGISTERED, {
+            "agent_id": agent.agent_id,
+            "name": agent.name,
+            "role": agent.role.value if hasattr(agent.role, "value") else str(agent.role),
+            "capabilities": agent.capabilities,
+            "workspace_id": self.workspace_id,
+        }, workspace_id=self.workspace_id)
         return agent
 
     def get(self, agent_id: str) -> Agent | None:

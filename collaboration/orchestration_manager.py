@@ -17,6 +17,7 @@ from collaboration.models import (
     TaskOrchestration, SubTask, CriticReview,
     OrchestrationPhase, ReviewDecision, TaskStatus, TaskComplexity, Phase,
 )
+from collaboration.plugin_system import HookEvent, emit_hook
 from collaboration.storage import for_orchestrations, for_subtasks, for_reviews, for_events, for_templates, ensure_workspace_files
 from collaboration.events import Event, EventType, get_event_bus
 
@@ -323,6 +324,15 @@ class OrchestrationManager:
         )
         self._orch_store.upsert(orch.to_dict())
         self._emit("orchestration.created", orch.to_dict())
+
+        # Plugin hook: orchestration.created
+        emit_hook(HookEvent.ORCHESTRATION_CREATED, {
+            "orchestration_id": orch_id,
+            "coordinator_id": coordinator_id,
+            "owner_id": owner_id,
+            "workspace_id": self.workspace_id,
+        }, workspace_id=self.workspace_id)
+
         return orch
 
     # ─── Ownership & Concurrency Guards ──────────────────────────────────────
@@ -376,9 +386,17 @@ class OrchestrationManager:
     def update_phase(self, orch_id: str, phase: OrchestrationPhase):
         orch = self.get_orchestration(orch_id)
         if orch:
+            old_phase = orch.phase
             orch.phase = phase
             orch.updated_at = _now_iso()
             self._orch_store.upsert(orch.to_dict())
+            # Plugin hook: orchestration.phase_changed
+            emit_hook(HookEvent.ORCHESTRATION_PHASE_CHANGED, {
+                "orchestration_id": orch_id,
+                "from_phase": old_phase.value if hasattr(old_phase, "value") else str(old_phase),
+                "to_phase": phase.value if hasattr(phase, "value") else str(phase),
+                "workspace_id": self.workspace_id,
+            }, workspace_id=self.workspace_id)
 
     # ─── Coordinator — 任务分解 ─────────────────────────────────────────────
 

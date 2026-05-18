@@ -10,9 +10,11 @@ from typing import Optional
 
 try:
     from .models import Task, TaskStatus, Priority
+    from .plugin_system import HookEvent, emit_hook
     from .storage import JsonFileStore
 except ImportError:
     from collaboration.models import Task, TaskStatus, Priority
+    from collaboration.plugin_system import HookEvent, emit_hook
     from collaboration.storage import JsonFileStore
 
 
@@ -62,10 +64,19 @@ class TaskManager:
             due_at=due_at,
             metadata=metadata or {}
         )
-        
+
         self.store.upsert(task.to_dict())
+
+        # Plugin hook: task.created
+        emit_hook(HookEvent.TASK_CREATED, {
+            "task_id": task.task_id,
+            "title": task.title,
+            "complexity": task.complexity.value if hasattr(task.complexity, "value") else str(getattr(task, "complexity", "normal")),
+            "workspace_id": workspace_id,
+        }, workspace_id=workspace_id)
+
         return task
-    
+
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get task by ID."""
         data = self.store.get(task_id)
@@ -129,15 +140,22 @@ class TaskManager:
         task = self.get_task(task_id)
         if not task:
             return None
-        
+
         task.complete(result)
         self.store.upsert(task.to_dict())
-        
+
         # Unblock dependent tasks
         self._unblock_dependent_tasks(task_id)
-        
+
+        # Plugin hook: task.completed
+        emit_hook(HookEvent.TASK_COMPLETED, {
+            "task_id": task.task_id,
+            "workspace_id": task.workspace_id,
+            "duration": result.get("duration") if result else None,
+        }, workspace_id=task.workspace_id)
+
         return task
-    
+
     def fail_task(self, task_id: str, error: str) -> Optional[Task]:
         """Mark task as failed."""
         task = self.get_task(task_id)
@@ -146,6 +164,14 @@ class TaskManager:
         
         task.fail(error)
         self.store.upsert(task.to_dict())
+
+        # Plugin hook: task.failed
+        emit_hook(HookEvent.TASK_FAILED, {
+            "task_id": task.task_id,
+            "workspace_id": task.workspace_id,
+            "error": error,
+        }, workspace_id=task.workspace_id)
+
         return task
     
     def cancel_task(self, task_id: str) -> Optional[Task]:
