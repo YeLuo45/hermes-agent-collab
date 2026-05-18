@@ -52,6 +52,8 @@ except ImportError:
     )
     from collaboration.secret_store import SecretStore, mask_dict, mask_value
     from collaboration.redacting_filter import SecretRedactingFilter
+    from collaboration.tenant_context import TenantContext, TenantIsolationMiddleware, require_workspace_access, require_admin
+    from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
 except ImportError:
     from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
     from collaboration.task_graph import (
@@ -60,6 +62,8 @@ except ImportError:
     )
     from collaboration.secret_store import SecretStore, mask_dict, mask_value
     from collaboration.redacting_filter import SecretRedactingFilter
+    from collaboration.tenant_context import TenantContext, TenantIsolationMiddleware, require_workspace_access, require_admin
+    from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
 
 # Base path for collaboration data
 COLLAB_BASE = Path("~/.hermes/collab").expanduser()
@@ -106,6 +110,18 @@ def _get_secret_store() -> SecretStore:
     if _secret_store is None:
         _secret_store = SecretStore()
     return _secret_store
+
+
+# Global QuotaManager instance
+_quota_manager: QuotaManager | None = None
+
+
+def _get_quota_manager() -> QuotaManager:
+    """Get or create the global QuotaManager."""
+    global _quota_manager
+    if _quota_manager is None:
+        _quota_manager = QuotaManager()
+    return _quota_manager
 
 
 # WorkspaceManager is stateless (no per-workspace state) so one instance suffices
@@ -2363,3 +2379,99 @@ async def list_secrets():
     """List all secret ref_ids and key names (NOT the values)."""
     store = _get_secret_store()
     return {"secrets": store.list_refs()}
+
+
+# =============================================================================
+# Multi-Tenant Admin Endpoints
+# =============================================================================
+
+class QuotaUpdateRequest(BaseModel):
+    resource: str
+    max_count: int
+    window_seconds: int = 0
+
+
+class TenantQuotaResponse(BaseModel):
+    workspace_id: str
+    usage: dict[str, Any]
+    limits: list[dict[str, Any]]
+    enabled: bool
+
+
+@router.get("/admin/tenants")
+async def list_tenants():
+    """List all tenants (workspaces) with their quota usage. Admin only."""
+    require_admin()
+    # Iterate all workspaces in manager cache
+    workspaces = list(_manager_cache.keys())
+    result = []
+    qm = _get_quota_manager()
+    for wid in workspaces:
+        usage = qm.get_usage(wid)
+        quota = qm.get_workspace_quota(wid)
+        result.append({
+            "workspace_id": wid,
+            "enabled": quota.enabled if quota else True,
+            "usage": {k: v.used for k, v in usage.items()},
+            "limits": [
+                {"resource": l.resource, "max_count": l.max_count, "window_seconds": l.window_seconds}
+                for l in (quota.limits.values() if quota else qm.DEFAULT_LIMITS)
+            ],
+        })
+    return {"tenants": result}
+
+
+@router.get("/admin/tenants/{workspace_id}/quota")
+async def get_tenant_quota(workspace_id: str):
+    """Get quota configuration and current usage for a tenant. Admin only."""
+    require_admin()
+    qm = _get_quota_manager()
+    usage = qm.get_usage(workspace_id)
+    quota = qm.get_workspace_quota(workspace_id)
+    return TenantQuotaResponse(
+        workspace_id=workspace_id,
+        enabled=quota.enabled if quota else True,
+        usage={k: {"used": v.used, "limit": v.limit, "remaining": v.remaining, "window_seconds": v.window_seconds} for k, v in usage.items()},
+        limits=[
+            {"resource": l.resource, "max_count": l.max_count, "window_seconds": l.window_seconds}
+            for l in (quota.limits.values() if quota else qm.DEFAULT_LIMITS)
+        ],
+    )
+
+
+@router.put("/admin/tenants/{workspace_id}/quota")
+async def update_tenant_quota(workspace_id: str, updates: list[QuotaUpdateRequest]):
+    """Update quota limits for a tenant. Admin only."""
+    require_admin()
+    qm = _get_quota_manager()
+    existing = qm.get_workspace_quota(workspace_id)
+    limits = {l.resource: l for l in (existing.limits.values() if existing else qm.DEFAULT_LIMITS)}
+    for u in updates:
+        limits[u.resource] = QuotaLimit(resource=u.resource, max_count=u.max_count, window_seconds=u.window_seconds)
+    new_quota = WorkspaceQuota(workspace_id=workspace_id, limits=list(limits.values()), enabled=True)
+    qm.set_workspace_quota(workspace_id, new_quota)
+    return {"message": f"Quota updated for {workspace_id}"}
+
+
+@router.post("/admin/tenants/{workspace_id}/quota/reset")
+async def reset_tenant_quota(workspace_id: str, resource: str | None = None):
+    """Reset quota counters for a tenant. Admin only."""
+    require_admin()
+    qm = _get_quota_manager()
+    qm.reset_quota(workspace_id, resource)
+    return {"message": f"Quota reset for {workspace_id}"}
+
+
+@router.get("/workspaces/{workspace_id}/usage")
+async def get_workspace_usage(workspace_id: str):
+    """Get current resource usage for a workspace."""
+    require_workspace_access(workspace_id)
+    qm = _get_quota_manager()
+    usage = qm.get_usage(workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "usage": [
+            {"resource": k, "used": v.used, "limit": v.limit, "remaining": v.remaining, "window_seconds": v.window_seconds, "reset_at": v.reset_at}
+            for k, v in usage.items()
+        ],
+    }
