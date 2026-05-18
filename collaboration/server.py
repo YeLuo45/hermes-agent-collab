@@ -103,6 +103,16 @@ async def lifespan(app: FastAPI):
             import logging
             logging.getLogger(__name__).warning("Redis connection failed: %s", exc)
 
+    # Initialize Webhook Manager (Direction T)
+    from collaboration.webhook_manager import init_webhook_manager
+    from collaboration.webhook_delivery import init_webhook_delivery
+    init_webhook_delivery(
+        max_retries=config.WEBHOOK_MAX_RETRIES,
+        timeout=config.WEBHOOK_TIMEOUT,
+        delivery_limit=config.WEBHOOK_DELIVERY_LIMIT,
+    )
+    init_webhook_manager()
+
     yield
 
     if redis_client:

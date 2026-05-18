@@ -2013,6 +2013,140 @@ async def get_cache_stats():
     return await cache.stats()
 
 
+# =============================================================================
+# Webhook Event Subscription Endpoints (Direction T)
+# =============================================================================
+
+# Pydantic models for webhook requests/responses
+
+class WebhookCreate(BaseModel):
+    url: str
+    events: list[str]
+    secret: str | None = None
+    workspace_id: str | None = None
+    retry_count: int = 3
+    retry_delay: float = 1.0
+
+
+class WebhookUpdate(BaseModel):
+    url: str | None = None
+    events: list[str] | None = None
+    enabled: bool | None = None
+
+
+class WebhookDeliveryResponse(BaseModel):
+    id: str
+    webhook_id: str
+    event_type: str
+    payload: dict
+    status: str
+    http_status: int | None
+    response_body: str | None
+    error: str | None
+    attempts: int
+    created_at: str
+    delivered_at: str | None
+
+
+def _get_webhook_manager():
+    from collaboration.webhook_manager import get_webhook_manager
+    return get_webhook_manager()
+
+
+@router.get("/webhooks", tags=["webhooks"])
+async def list_webhooks(
+    workspace_id: str | None = None,
+    event_type: str | None = None,
+):
+    """List all webhook subscriptions, optionally filtered."""
+    mgr = _get_webhook_manager()
+    subs = await mgr.list_subscriptions(workspace_id=workspace_id, event_type=event_type)
+    return {"webhooks": [s.to_dict() for s in subs]}
+
+
+@router.post("/webhooks", response_model=dict, tags=["webhooks"])
+async def create_webhook(req: WebhookCreate):
+    """Create a new webhook subscription."""
+    mgr = _get_webhook_manager()
+    sub = await mgr.subscribe(
+        url=req.url,
+        events=req.events,
+        secret=req.secret,
+        workspace_id=req.workspace_id,
+        retry_count=req.retry_count,
+        retry_delay=req.retry_delay,
+    )
+    return sub.to_dict()
+
+
+@router.get("/webhooks/{webhook_id}", tags=["webhooks"])
+async def get_webhook(webhook_id: str):
+    """Get a single webhook subscription."""
+    mgr = _get_webhook_manager()
+    sub = await mgr.get_subscription(webhook_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return sub.to_dict()
+
+
+@router.patch("/webhooks/{webhook_id}", tags=["webhooks"])
+async def update_webhook(webhook_id: str, req: WebhookUpdate):
+    """Update a webhook subscription."""
+    mgr = _get_webhook_manager()
+    sub = await mgr.update_subscription(
+        webhook_id,
+        url=req.url,
+        events=req.events,
+        enabled=req.enabled,
+    )
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return sub.to_dict()
+
+
+@router.delete("/webhooks/{webhook_id}", tags=["webhooks"])
+async def delete_webhook(webhook_id: str):
+    """Delete a webhook subscription."""
+    mgr = _get_webhook_manager()
+    found = await mgr.unsubscribe(webhook_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return {"status": "deleted", "webhook_id": webhook_id}
+
+
+@router.post("/webhooks/{webhook_id}/test", tags=["webhooks"])
+async def test_webhook(webhook_id: str):
+    """Send a test webhook delivery."""
+    from collaboration.webhook_delivery import test_webhook as _test_delivery
+
+    mgr = _get_webhook_manager()
+    sub = await mgr.get_subscription(webhook_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    result = await _test_delivery(sub)
+    return result
+
+
+@router.get("/webhooks/{webhook_id}/deliveries", tags=["webhooks"])
+async def list_webhook_deliveries(webhook_id: str, limit: int = 50):
+    """Get delivery history for a webhook."""
+    mgr = _get_webhook_manager()
+    sub = await mgr.get_subscription(webhook_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    deliveries = await mgr.get_deliveries(webhook_id, limit=limit)
+    return {"deliveries": [d.to_dict() for d in deliveries]}
+
+
+@router.post("/webhooks/deliveries/{delivery_id}/retry", tags=["webhooks"])
+async def retry_delivery(delivery_id: str):
+    """Retry a failed webhook delivery."""
+    # Find the delivery in manager state — simplified: just return 501 Not Implemented
+    # Full implementation would track delivery_id → subscription mapping
+    raise HTTPException(status_code=501, detail="Use POST /webhooks/{webhook_id}/test to retry")
+
+
 # ---- Helpers ----
 
 import json

@@ -93,6 +93,12 @@ class CollabConfig:
     TASK_CACHE_STRATEGY: str = "ttl"  # "ttl" | "lru" | "lfu"
     TASK_CACHE_REDIS_KEY_PREFIX: str = "collab:task_result"
 
+    # === Webhook Event Subscriptions (Direction T) ===
+    WEBHOOK_ENABLED: bool = True
+    WEBHOOK_MAX_RETRIES: int = 3
+    WEBHOOK_TIMEOUT: float = 10.0
+    WEBHOOK_DELIVERY_LIMIT: int = 50
+
     def __post_init__(self):
         if self.CHANNEL_ADAPTERS is None:
             self.CHANNEL_ADAPTERS = ["redis_stream", "redis_pubsub", "sse"]
@@ -206,6 +212,20 @@ class CollabConfig:
         self.TASK_CACHE_REDIS_KEY_PREFIX = os.getenv(
             "TASK_CACHE_REDIS_KEY_PREFIX", self.TASK_CACHE_REDIS_KEY_PREFIX
         )
+
+        # Webhook Event Subscriptions
+        webhook_env = os.getenv("WEBHOOK_ENABLED")
+        if webhook_env is not None:
+            self.WEBHOOK_ENABLED = webhook_env.lower() in ("true", "1", "yes")
+        max_retries = os.getenv("WEBHOOK_MAX_RETRIES")
+        if max_retries:
+            self.WEBHOOK_MAX_RETRIES = int(max_retries)
+        timeout = os.getenv("WEBHOOK_TIMEOUT")
+        if timeout:
+            self.WEBHOOK_TIMEOUT = float(timeout)
+        delivery_limit = os.getenv("WEBHOOK_DELIVERY_LIMIT")
+        if delivery_limit:
+            self.WEBHOOK_DELIVERY_LIMIT = int(delivery_limit)
 
 
 # Global singleton
