@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -147,6 +148,54 @@ class SkillCreate(BaseModel):
     name: str
     category: str
     description: Optional[str] = ""
+    config: Optional[dict] = {}
+
+
+# =============================================================================
+# Multi-Agent Protocol Request/Response Models
+# =============================================================================
+
+class MessageSendRequest(BaseModel):
+    receiver_id: Optional[str] = None  # None = broadcast
+    msg_type: str
+    payload: dict = {}
+    session_id: Optional[str] = None
+    ttl_seconds: int = 300
+
+
+class SessionCreateRequest(BaseModel):
+    participants: list[str]
+    context: Optional[dict] = {}
+
+
+class DistributionCreateRequest(BaseModel):
+    task_id: str
+    description: str
+    policy_type: Optional[str] = "capability_match"
+    policy_min_confidence: Optional[float] = 0.3
+    required_capabilities: Optional[list[str]] = None
+
+
+class DistributionAssignRequest(BaseModel):
+    agent_id: str
+
+
+class CapabilityMatchRequest(BaseModel):
+    query: str
+    required_capabilities: list[str]
+    min_confidence: float = 0.3
+
+
+class HookSubscribeRequest(BaseModel):
+    event: str
+    callback_url: Optional[str] = None
+    filter_fields: Optional[dict] = None
+
+
+class PluginRegisterRequest(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    hooks: list[str]
     config: Optional[dict] = {}
 
 
@@ -1098,6 +1147,425 @@ async def sse_endpoint():
 
     return StreamingResponse(
         event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# =============================================================================
+# Orchestration Lifecycle Endpoints
+# =============================================================================
+
+@router.post("/orchestrations")
+async def create_orchestration(data: dict):
+    """Create a new task orchestration."""
+    mgr = _get_orch_mgr()
+    from collaboration.models import Task, Priority, TaskStatus
+    task = Task(
+        task_id=f"task_{uuid().hex[:8]}",
+        workspace_id=data.get("workspace_id", "default"),
+        title=data.get("title", "Untitled"),
+        description=data.get("description", ""),
+        status=TaskStatus.PENDING,
+        priority=Priority(data.get("priority", "medium")),
+    )
+    orch = mgr.create_orchestration(task)
+    return orch.to_dict()
+
+
+@router.post("/orchestrations/{orch_id}/start")
+async def start_orchestration(orch_id: str):
+    """Start an orchestration (transition from PLANNING to EXECUTING)."""
+    mgr = _get_orch_mgr()
+    from collaboration.models import OrchestrationPhase
+    mgr.update_phase(orch_id, OrchestrationPhase.EXECUTING)
+    orch = mgr.get_orchestration(orch_id)
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+    return orch.to_dict()
+
+
+@router.post("/orchestrations/{orch_id}/phase")
+async def update_orchestration_phase(orch_id: str, phase: str):
+    """Update orchestration phase."""
+    mgr = _get_orch_mgr()
+    from collaboration.models import OrchestrationPhase
+    try:
+        mgr.update_phase(orch_id, OrchestrationPhase(phase))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid phase: {phase}")
+    orch = mgr.get_orchestration(orch_id)
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+    return orch.to_dict()
+
+
+# =============================================================================
+# Multi-Agent Protocol Endpoints (messages, sessions, distributions)
+# =============================================================================
+
+@router.post("/messages")
+async def send_message(data: MessageSendRequest, workspace_id: str = "default"):
+    """Send a message from one agent to another or broadcast."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    msg = proto.send_message(
+        sender_id=data.payload.get("sender_id", "system"),
+        receiver_id=data.receiver_id,
+        msg_type=data.msg_type,
+        payload=data.payload,
+        session_id=data.session_id,
+        ttl_seconds=data.ttl_seconds,
+    )
+    return {
+        "msg_id": msg.msg_id,
+        "status": msg.status.value if hasattr(msg.status, "value") else msg.status,
+        "timestamp": msg.timestamp,
+    }
+
+
+@router.get("/messages/pending")
+async def get_pending_messages(agent_id: str, workspace_id: str = "default"):
+    """Get pending messages for an agent."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    msgs = proto.get_pending_messages(agent_id)
+    return {"messages": [m.to_dict() for m in msgs]}
+
+
+@router.post("/messages/{msg_id}/ack")
+async def acknowledge_message(msg_id: str, agent_id: str, workspace_id: str = "default"):
+    """Acknowledge a message."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    ok = proto.acknowledge_message(msg_id, agent_id)
+    return {"success": ok}
+
+
+@router.post("/sessions")
+async def create_session(data: SessionCreateRequest, workspace_id: str = "default"):
+    """Create a new collaborative session."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    session = proto.create_session(data.participants, data.context)
+    return session.to_dict()
+
+
+@router.get("/sessions")
+async def list_sessions(workspace_id: str = "default", status: Optional[str] = None):
+    """List sessions, optionally filtered by status."""
+    from collaboration.protocol import MultiAgentProtocol
+    from collaboration.models import SessionStatus
+    proto = MultiAgentProtocol(workspace_id)
+    sess_status = SessionStatus(status) if status else None
+    sessions = proto.list_sessions(status=sess_status)
+    return {"sessions": [s.to_dict() for s in sessions]}
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(session_id: str, workspace_id: str = "default"):
+    """Get a session by ID."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    session = proto.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session.to_dict()
+
+
+@router.post("/sessions/{session_id}/end")
+async def end_session(session_id: str, workspace_id: str = "default"):
+    """End a session."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    ok = proto.end_session(session_id)
+    return {"success": ok}
+
+
+@router.post("/distributions")
+async def distribute_task(data: DistributionCreateRequest, workspace_id: str = "default"):
+    """Distribute a task to agents based on delegation policy."""
+    from collaboration.protocol import MultiAgentProtocol
+    from collaboration.models import DelegationPolicy
+    proto = MultiAgentProtocol(workspace_id)
+    policy = DelegationPolicy(
+        type=data.policy_type or "capability_match",
+        min_confidence=data.policy_min_confidence or 0.3,
+    )
+    dist = proto.distribute_task(
+        task_id=data.task_id,
+        description=data.description,
+        policy=policy,
+        required_capabilities=data.required_capabilities,
+    )
+    return dist.to_dict()
+
+
+@router.get("/distributions/{distribution_id}")
+async def get_distribution(distribution_id: str, workspace_id: str = "default"):
+    """Get a distribution by ID."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    dist = proto.get_distribution(distribution_id)
+    if not dist:
+        raise HTTPException(status_code=404, detail="Distribution not found")
+    return dist.to_dict()
+
+
+@router.post("/distributions/{distribution_id}/assign")
+async def assign_distribution(
+    distribution_id: str,
+    data: DistributionAssignRequest,
+    workspace_id: str = "default",
+):
+    """Assign a distributed task to a specific agent."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    ok = proto.assign_to_agent(distribution_id, data.agent_id)
+    return {"success": ok}
+
+
+@router.get("/capabilities/match")
+async def match_capabilities(
+    query: str,
+    required_capabilities: str,  # comma-separated
+    min_confidence: float = 0.3,
+    workspace_id: str = "default",
+):
+    """Match agents by their registered capabilities."""
+    from collaboration.protocol import MultiAgentProtocol
+    proto = MultiAgentProtocol(workspace_id)
+    caps = [c.strip() for c in required_capabilities.split(",") if c.strip()]
+    result = proto.match_capabilities(query, caps, min_confidence)
+    return result.to_dict()
+
+
+# =============================================================================
+# Plugin/Hook Management Endpoints
+# =============================================================================
+
+@router.get("/plugins")
+async def list_plugins(workspace_id: str = "default"):
+    """List all registered plugins."""
+    from collaboration.plugin_system import get_registry
+    registry = get_registry(workspace_id)
+    plugins = list(registry._plugins.values())
+    return {"plugins": [{"name": p.name, "hooks": p.hooks, "enabled": p.enabled, "config": p.config} for p in plugins]}
+
+
+@router.post("/plugins")
+async def register_plugin(data: PluginRegisterRequest, workspace_id: str = "default"):
+    """Register a new plugin."""
+    from collaboration.plugin_system import get_registry, Plugin
+    registry = get_registry(workspace_id)
+    plugin = Plugin(
+        name=data.name,
+        description=data.description or "",
+        hooks=data.hooks,
+        config=data.config or {},
+    )
+    registry.register(plugin)
+    return {"success": True, "plugin_name": data.name}
+
+
+@router.delete("/plugins/{plugin_name}")
+async def unregister_plugin(plugin_name: str, workspace_id: str = "default"):
+    """Unregister a plugin."""
+    from collaboration.plugin_system import get_registry
+    registry = get_registry(workspace_id)
+    ok = registry.unregister(plugin_name)
+    return {"success": ok}
+
+
+@router.patch("/plugins/{plugin_name}/enable")
+async def toggle_plugin(plugin_name: str, enabled: bool, workspace_id: str = "default"):
+    """Enable or disable a plugin."""
+    from collaboration.plugin_system import get_registry
+    registry = get_registry(workspace_id)
+    if enabled:
+        ok = registry.enable(plugin_name)
+    else:
+        ok = registry.disable(plugin_name)
+    return {"success": ok}
+
+
+@router.get("/hooks/events")
+async def list_hook_events():
+    """List all available hook event types."""
+    from collaboration.models import HookEvent
+    return {"events": [e.value for e in HookEvent]}
+
+
+@router.get("/hooks")
+async def list_subscriptions(workspace_id: str = "default"):
+    """List all hook subscriptions for a workspace."""
+    from collaboration.plugin_system import get_registry
+    registry = get_registry(workspace_id)
+    subs = []
+    for event_name, handlers in registry._subscribers.items():
+        for handler in handlers:
+            subs.append({"event": event_name, "handler": str(handler)})
+    return {"subscriptions": subs}
+
+
+@router.post("/hooks/subscribe")
+async def subscribe_to_hook(data: HookSubscribeRequest, workspace_id: str = "default"):
+    """Subscribe to a hook event.
+
+    Note: This registers an in-process callback. For HTTP callbacks,
+    use the plugin system with a custom config.
+    """
+    from collaboration.plugin_system import get_registry
+    registry = get_registry(workspace_id)
+
+    def inline_handler(event_data: dict):
+        _log.info(f"Hook triggered: {data.event} -> {event_data}")
+
+    ok = registry.subscribe(data.event, inline_handler)
+    return {"success": ok}
+
+
+# =============================================================================
+# SSE Stream Endpoints (workspace-scoped with filtering and cursor)
+# =============================================================================
+
+@router.get("/events")
+async def sse_events_endpoint(
+    workspace_id: Optional[str] = None,
+    types: Optional[str] = None,  # comma-separated
+    cursor: Optional[int] = None,
+    timeout: int = 60,
+):
+    """SSE stream with workspace scoping, event filtering, and reconnect cursor.
+
+    Query params:
+    - workspace_id: filter events by workspace (omit for global)
+    - types: comma-separated event types (e.g., task.created,agent.registered)
+    - cursor: resume from event seq (for reconnect)
+    - timeout: client disconnect timeout in seconds (default 60, max 300)
+    """
+    if timeout > 300:
+        timeout = 300
+
+    event_types = None
+    if types:
+        event_types = set(types.split(","))
+
+    async def event_generator():
+        bus = get_event_bus()
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=100)
+        counter = 0
+
+        async def on_event(event):
+            nonlocal counter
+            # Filter by workspace
+            if workspace_id and event.workspace_id != workspace_id:
+                return
+            # Filter by event type
+            event_type_val = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
+            if event_types and event_type_val not in event_types:
+                return
+            # Skip events before cursor
+            counter += 1
+            if cursor and counter <= cursor:
+                return
+            event_dict = event.to_dict()
+            event_dict["seq"] = counter
+            try:
+                queue.put_nowait(event_dict)
+            except asyncio.QueueFull:
+                pass
+
+        await bus.subscribe(on_event, workspace_id=None)
+
+        last_heartbeat = 0
+        try:
+            while True:
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=timeout)
+                    event_type_val = event_data.get("event_type", "message")
+                    yield f"event: {event_type_val}\nid: {event_data.get('seq', 0)}\ndata: {json.dumps(event_data)}\n\n"
+                    last_heartbeat = 0
+                except asyncio.TimeoutError:
+                    last_heartbeat += timeout
+                    if last_heartbeat >= 60:
+                        break
+                    yield f": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/workspaces/{ws_id}/events")
+async def sse_workspace_events(
+    ws_id: str,
+    types: Optional[str] = None,
+    cursor: Optional[int] = None,
+    timeout: int = 60,
+):
+    """Workspace-scoped SSE stream."""
+    if timeout > 300:
+        timeout = 300
+
+    event_types = None
+    if types:
+        event_types = set(types.split(","))
+
+    async def event_generator():
+        bus = get_event_bus()
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=100)
+        counter = 0
+
+        async def on_event(event):
+            nonlocal counter
+            if event.workspace_id != ws_id:
+                return
+            event_type_val = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
+            if event_types and event_type_val not in event_types:
+                return
+            counter += 1
+            if cursor and counter <= cursor:
+                return
+            event_dict = event.to_dict()
+            event_dict["seq"] = counter
+            try:
+                queue.put_nowait(event_dict)
+            except asyncio.QueueFull:
+                pass
+
+        await bus.subscribe(on_event, workspace_id=None)
+
+        last_heartbeat = 0
+        try:
+            while True:
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=timeout)
+                    event_type_val = event_data.get("event_type", "message")
+                    yield f"event: {event_type_val}\nid: {event_data.get('seq', 0)}\ndata: {json.dumps(event_data)}\n\n"
+                    last_heartbeat = 0
+                except asyncio.TimeoutError:
+                    last_heartbeat += timeout
+                    if last_heartbeat >= 60:
+                        break
+                    yield f": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
