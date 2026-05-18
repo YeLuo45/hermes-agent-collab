@@ -55,6 +55,7 @@ except ImportError:
     from collaboration.tenant_context import TenantContext, TenantIsolationMiddleware, require_workspace_access, require_admin
     from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
     from collaboration.audit_logger import AuditLogger, Actor as AuditActor, Target as AuditTarget
+    from collaboration.template_market import TemplateMarket, WorkflowTemplate, Author, TemplateListing
 except ImportError:
     from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
     from collaboration.task_graph import (
@@ -66,6 +67,7 @@ except ImportError:
     from collaboration.tenant_context import TenantContext, TenantIsolationMiddleware, require_workspace_access, require_admin
     from collaboration.quota_manager import QuotaManager, WorkspaceQuota, QuotaLimit, UsageRecord
     from collaboration.audit_logger import AuditLogger, Actor as AuditActor, Target as AuditTarget
+    from collaboration.template_market import TemplateMarket, WorkflowTemplate, Author, TemplateListing
 
 # Base path for collaboration data
 COLLAB_BASE = Path("~/.hermes/collab").expanduser()
@@ -2575,3 +2577,176 @@ async def verify_audit_integrity(workspace_id: str, date: str | None = None):
     audit = _get_audit_logger()
     ok = audit.verify_integrity(workspace_id, date)
     return {"workspace_id": workspace_id, "date": date, "integrity_ok": ok}
+
+
+# =============================================================================
+# Template Market Endpoints
+# =============================================================================
+
+_market: TemplateMarket | None = None
+
+
+def _get_market() -> TemplateMarket:
+    global _market
+    if _market is None:
+        _market = TemplateMarket()
+    return _market
+
+
+class PublishTemplateRequest(BaseModel):
+    name: str
+    workflow: dict
+    category: str = "custom"
+    description: str = ""
+    version: str = "1.0.0"
+    min_app_version: str = "1.0.0"
+    author_id: str = ""
+    author_name: str = ""
+    author_type: str = "user"
+    input_schema: dict = {}
+    tags: list[str] = []
+
+
+class TemplateInstallRequest(BaseModel):
+    workspace_id: str
+
+
+class TemplateRateRequest(BaseModel):
+    user_id: str
+    rating: float
+
+
+class TemplateDiscoverParams(BaseModel):
+    category: str | None = None
+    tags: list[str] = []
+    query: str | None = None
+    page: int = 1
+    page_size: int = 20
+
+
+@router.post("/templates/publish")
+async def publish_template(req: PublishTemplateRequest):
+    """Publish a workflow template to the market."""
+    market = _get_market()
+    author = Author(
+        type=req.author_type or "user",
+        id=req.author_id or "anonymous",
+        name=req.author_name or "Anonymous",
+    )
+    template = WorkflowTemplate(
+        name=req.name,
+        workflow=req.workflow,
+        category=req.category,
+        description=req.description,
+        version=req.version,
+        min_app_version=req.min_app_version,
+        author=author,
+        input_schema=req.input_schema,
+        tags=req.tags,
+    )
+    tid = market.publish(template)
+    return {"template_id": tid, "published": True}
+
+
+@router.get("/templates")
+async def discover_templates(params: TemplateDiscoverParams = Depends()):
+    """Discover workflow templates with filters."""
+    market = _get_market()
+    results = market.discover(
+        category=params.category,
+        tags=params.tags or None,
+        query=params.query,
+        page=params.page,
+        page_size=params.page_size,
+    )
+    return {
+        "templates": [
+            {
+                "template_id": t.template_id,
+                "name": t.name,
+                "description": t.description,
+                "category": t.category,
+                "version": t.version,
+                "author_name": t.author_name,
+                "tags": t.tags,
+                "installs": t.installs,
+                "rating": t.rating,
+                "created_at": t.created_at,
+            }
+            for t in results
+        ],
+        "page": params.page,
+        "page_size": params.page_size,
+    }
+
+
+@router.get("/templates/categories")
+async def list_template_categories():
+    """List all template categories with counts."""
+    market = _get_market()
+    return {"categories": market.list_categories()}
+
+
+@router.get("/templates/{template_id}")
+async def get_template(template_id: str):
+    """Get a template by ID."""
+    market = _get_market()
+    template = market.get(template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {
+        "template_id": template.template_id,
+        "name": template.name,
+        "description": template.description,
+        "category": template.category,
+        "version": template.version,
+        "min_app_version": template.min_app_version,
+        "author": {
+            "type": template.author.type if template.author else "unknown",
+            "id": template.author.id if template.author else "",
+            "name": template.author.name if template.author else "",
+        },
+        "workflow": template.workflow,
+        "input_schema": template.input_schema,
+        "tags": template.tags,
+        "stats": {
+            "installs": template.stats.installs,
+            "rating": template.stats.rating,
+            "rating_count": template.stats.rating_count,
+        },
+        "created_at": template.created_at,
+        "updated_at": template.updated_at,
+    }
+
+
+@router.post("/templates/{template_id}/install")
+async def install_template(template_id: str, req: TemplateInstallRequest):
+    """Install a template into a workspace."""
+    market = _get_market()
+    try:
+        workflow_id = market.install(template_id, req.workspace_id)
+        return {"workflow_id": workflow_id, "installed": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/templates/{template_id}/rate")
+async def rate_template(template_id: str, req: TemplateRateRequest):
+    """Rate a template (1.0 - 5.0)."""
+    market = _get_market()
+    try:
+        market.rate(template_id, req.user_id, req.rating)
+        return {"rated": True, "rating": req.rating}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/templates/install-from-url")
+async def install_from_url(url: str, workspace_id: str):
+    """Install a template from a remote HTTP URL."""
+    market = _get_market()
+    try:
+        workflow_id = market.install_from_url(url, workspace_id)
+        return {"workflow_id": workflow_id, "installed": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
