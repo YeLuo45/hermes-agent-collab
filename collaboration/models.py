@@ -793,6 +793,15 @@ class HookEvent(str, Enum):
     WORKSPACE_INITIALIZED = "workspace.initialized"
     SYSTEM_READY = "system.ready"
 
+    # Multi-Agent Protocol (Direction E)
+    MESSAGE_SENT = "message.sent"
+    MESSAGE_DELIVERED = "message.delivered"
+    TASK_DISTRIBUTED = "task.distributed"
+    TASK_ASSIGNED = "task.assigned"
+    SESSION_CREATED = "session.created"
+    SESSION_ENDED = "session.ended"
+    CAPABILITY_MATCHED = "capability.matched"
+
 
 @dataclass
 class Plugin:
@@ -844,3 +853,227 @@ class Plugin:
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
+
+
+# ─── Multi-Agent Protocol ──────────────────────────────────────────────────────
+
+
+class MessageType(str, Enum):
+    """Agent-to-agent message types."""
+
+    REQUEST_TASK = "request.task"         # coordinator → worker: please do this
+    RESPONSE_RESULT = "response.result"   # worker → coordinator: done
+    CAPABILITY_QUERY = "capability.query" # who can do X?
+    CAPABILITY_ANNOUNCE = "capability.announce"  # I can do X
+    STATE_SYNC = "state.sync"            # periodic heartbeat/state broadcast
+    DELEGATION = "delegation"            # I assign this to you
+    ACKNOWLEDGMENT = "acknowledgment"     # task received
+    HEARTBEAT = "heartbeat"              # I'm alive
+    ERROR_REPORT = "error.report"         # something went wrong
+
+
+class MessageStatus(str, Enum):
+    """Delivery status of an agent message."""
+
+    PENDING = "pending"
+    DELIVERED = "delivered"
+    ACKed = "acked"       # acknowledged by receiver
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+class SessionStatus(str, Enum):
+    """Lifecycle status of an agent session."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    ENDED = "ended"
+
+
+@dataclass
+class AgentMessage:
+    """A message sent between agents."""
+
+    msg_id: str
+    sender_id: str
+    receiver_id: str | None  # None = broadcast
+    msg_type: MessageType | str
+    payload: dict[str, Any]
+    session_id: str | None = None
+    correlation_id: str | None = None
+    timestamp: str = field(default_factory=_now_iso)
+    ttl_seconds: int = 300
+    status: MessageStatus | str = MessageStatus.PENDING
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "msg_id": self.msg_id,
+            "sender_id": self.sender_id,
+            "receiver_id": self.receiver_id,
+            "msg_type": self.msg_type.value if isinstance(self.msg_type, MessageType) else self.msg_type,
+            "payload": self.payload,
+            "session_id": self.session_id,
+            "correlation_id": self.correlation_id,
+            "timestamp": self.timestamp,
+            "ttl_seconds": self.ttl_seconds,
+            "status": self.status.value if isinstance(self.status, MessageStatus) else self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AgentMessage":
+        msg_type = data.get("msg_type", "request.task")
+        if isinstance(msg_type, str):
+            try:
+                msg_type = MessageType(msg_type)
+            except ValueError:
+                msg_type = MessageType.REQUEST_TASK
+        status = data.get("status", "pending")
+        if isinstance(status, str):
+            try:
+                status = MessageStatus(status)
+            except ValueError:
+                status = MessageStatus.PENDING
+        return cls(
+            msg_id=data["msg_id"],
+            sender_id=data["sender_id"],
+            receiver_id=data.get("receiver_id"),
+            msg_type=msg_type,
+            payload=data.get("payload", {}),
+            session_id=data.get("session_id"),
+            correlation_id=data.get("correlation_id"),
+            timestamp=data.get("timestamp", ""),
+            ttl_seconds=data.get("ttl_seconds", 300),
+            status=status,
+        )
+
+
+@dataclass
+class AgentSession:
+    """A collaborative session between multiple agents."""
+
+    session_id: str
+    participants: list[str]
+    context: dict[str, Any] = field(default_factory=dict)
+    messages: list[dict] = field(default_factory=list)  # recent messages (for history)
+    created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
+    status: SessionStatus | str = SessionStatus.ACTIVE
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "participants": self.participants,
+            "context": self.context,
+            "messages": self.messages,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "status": self.status.value if isinstance(self.status, SessionStatus) else self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AgentSession":
+        status = data.get("status", "active")
+        if isinstance(status, str):
+            try:
+                status = SessionStatus(status)
+            except ValueError:
+                status = SessionStatus.ACTIVE
+        return cls(
+            session_id=data["session_id"],
+            participants=data.get("participants", []),
+            context=data.get("context", {}),
+            messages=data.get("messages", []),
+            created_at=data.get("created_at", ""),
+            updated_at=data.get("updated_at", ""),
+            status=status,
+        )
+
+
+@dataclass
+class DelegationPolicy:
+    """Policy for how a task should be distributed to agents."""
+
+    type: str = "capability_match"  # "broadcast" | "capability_match" | "指定"
+    timeout_seconds: int = 120
+    retry_count: int = 2
+    min_confidence: float = 0.7
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "timeout_seconds": self.timeout_seconds,
+            "retry_count": self.retry_count,
+            "min_confidence": self.min_confidence,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DelegationPolicy":
+        return cls(
+            type=data.get("type", "capability_match"),
+            timeout_seconds=data.get("timeout_seconds", 120),
+            retry_count=data.get("retry_count", 2),
+            min_confidence=data.get("min_confidence", 0.7),
+        )
+
+
+# Policy presets
+DELEGATION_BROADCAST = DelegationPolicy(type="broadcast", timeout_seconds=60, retry_count=1, min_confidence=0.0)
+DELEGATION_FIRST_RESPOND = DelegationPolicy(type="capability_match", timeout_seconds=120, retry_count=2, min_confidence=0.7)
+DELEGATION_CAPABILITY_MATCH = DelegationPolicy(type="capability_match", timeout_seconds=180, retry_count=3, min_confidence=0.8)
+
+
+@dataclass
+class TaskDistribution:
+    """Tracks how a task was distributed to agents."""
+
+    distribution_id: str
+    task_id: str
+    delegation_policy: DelegationPolicy
+    candidates: list[str] = field(default_factory=list)
+    assigned_agents: list[str] = field(default_factory=list)
+    distribution_result: dict[str, Any] | None = None
+    created_at: str = field(default_factory=_now_iso)
+    status: str = "pending"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "distribution_id": self.distribution_id,
+            "task_id": self.task_id,
+            "delegation_policy": self.delegation_policy.to_dict(),
+            "candidates": self.candidates,
+            "assigned_agents": self.assigned_agents,
+            "distribution_result": self.distribution_result,
+            "created_at": self.created_at,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TaskDistribution":
+        return cls(
+            distribution_id=data["distribution_id"],
+            task_id=data["task_id"],
+            delegation_policy=DelegationPolicy.from_dict(data.get("delegation_policy", {})),
+            candidates=data.get("candidates", []),
+            assigned_agents=data.get("assigned_agents", []),
+            distribution_result=data.get("distribution_result"),
+            created_at=data.get("created_at", ""),
+            status=data.get("status", "pending"),
+        )
+
+
+@dataclass
+class CapabilityMatchResult:
+    """Result of a capability matching query."""
+
+    query: str
+    matched_agents: list[tuple[str, float]]  # (agent_id, confidence)
+    best_candidate: str | None
+    match_method: str = "capability_match"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "matched_agents": self.matched_agents,
+            "best_candidate": self.best_candidate,
+            "match_method": self.match_method,
+        }

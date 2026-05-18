@@ -4,10 +4,12 @@ Manages Agent profiles within a workspace: registration, status updates,
 and heartbeat tracking for online/offline detection.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Tuple
 
 from collaboration.events import Event, EventType, get_event_bus
 from collaboration.models import Agent, AgentRole, AgentStatus
@@ -63,7 +65,35 @@ class AgentRegistry:
         return self._store.get(agent_id)
 
     def list(self) -> list[Agent]:
+        """List all registered agents."""
         return self._store.list()
+
+    def find_by_capability(
+        self,
+        capability: str,
+        min_confidence: float = 0.0,
+    ) -> list[tuple[Agent, float]]:
+        """Find agents that have a given capability.
+
+        Returns list of (agent, confidence_score) sorted by confidence descending.
+        Confidence is 1.0 for exact match, 0.5 for partial match.
+        """
+        cap_lower = capability.lower()
+        results: list[tuple[Agent, float]] = []
+
+        for agent in self._store.list():
+            if not agent.capabilities:
+                continue
+
+            agent_caps_lower = [c.lower() for c in agent.capabilities]
+
+            if cap_lower in agent_caps_lower:
+                results.append((agent, 1.0))
+            elif any(cap_lower in ac or ac in cap_lower for ac in agent_caps_lower):
+                results.append((agent, 0.5))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return [(a, s) for a, s in results if s >= min_confidence]
 
     def update(self, agent_id: str, **fields) -> Agent:
         """Update mutable agent fields."""

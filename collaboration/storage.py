@@ -52,6 +52,9 @@ class StorageBackend(ABC):
             "TaskOrchestration": "orchestration_id",
             "SubTask": "sub_task_id",
             "CriticReview": "review_id",
+            "AgentMessage": "msg_id",
+            "AgentSession": "session_id",
+            "TaskDistribution": "distribution_id",
         }
         name = self._model_type.__name__
         field = mapping.get(name)
@@ -528,3 +531,15 @@ def for_events(ws_path: Path) -> JsonFileStore:
 def for_templates(ws_path: Path) -> JsonFileStore:
     """JsonFileStore for templates.json."""
     return JsonFileStore(ws_path / "templates.json", dict)
+
+
+def for_messages(ws_path: Path) -> JsonFileStore:
+    """JsonFileStore for messages.json."""
+    from collaboration.models import AgentMessage
+    return JsonFileStore(ws_path / "messages.json", AgentMessage)
+
+
+def for_sessions(ws_path: Path) -> JsonFileStore:
+    """JsonFileStore for sessions.json."""
+    from collaboration.models import AgentSession
+    return JsonFileStore(ws_path / "sessions.json", AgentSession)
