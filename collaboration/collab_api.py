@@ -28,6 +28,11 @@ try:
     from .skill_system import SkillSystem
     from .monitor import RuntimeMonitor
     from .events import EventType, get_event_bus
+    from .task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
+    from .task_graph import (
+        TaskGraphResponse, TopologicalSortResponse, ExecutionPlan,
+        UpstreamDownstreamResponse,
+    )
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -40,6 +45,11 @@ except ImportError:
     from collaboration.skill_system import SkillSystem
     from collaboration.monitor import RuntimeMonitor
     from collaboration.events import EventType, get_event_bus
+    from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
+    from collaboration.task_graph import (
+        TaskGraphResponse, TopologicalSortResponse, ExecutionPlan,
+        UpstreamDownstreamResponse,
+    )
 
 _log = logging.getLogger(__name__)
 
@@ -557,6 +567,92 @@ async def get_workspace_stats(workspace_id: str):
             "avg_task_duration_seconds": workspace_metrics.avg_task_duration_seconds
         }
     }
+
+
+# =============================================================================
+# Task Graph / DAG Visualization Endpoints
+# =============================================================================
+
+def _get_task_graph_builder(workspace_id: str) -> TaskGraphBuilder:
+    """Get or create TaskGraphBuilder for a workspace."""
+    managers = _get_workspace_managers(workspace_id)
+    task_mgr = managers["tasks"]
+    return TaskGraphBuilder(task_mgr)
+
+
+def _get_execution_plan_generator(workspace_id: str) -> ExecutionPlanGenerator:
+    """Get or create ExecutionPlanGenerator for a workspace."""
+    builders = _get_task_graph_builder(workspace_id)
+    return ExecutionPlanGenerator(builders)
+
+
+@router.get("/workspaces/{workspace_id}/graph")
+async def get_task_graph(workspace_id: str):
+    """Get the full task dependency graph for a workspace."""
+    try:
+        builder = _get_task_graph_builder(workspace_id)
+        graph = builder.build(workspace_id)
+        return graph.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build task graph: {str(e)}")
+
+
+@router.get("/workspaces/{workspace_id}/graph/toposort")
+async def get_topological_sort(workspace_id: str):
+    """Get topological sort of tasks with cycle detection."""
+    try:
+        builder = _get_task_graph_builder(workspace_id)
+        graph = builder.build(workspace_id)
+        sorter = TopologicalSorter(graph.nodes, graph.edges)
+        result = sorter.sort()
+        return result.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute topological sort: {str(e)}")
+
+
+@router.get("/workspaces/{workspace_id}/graph/plan")
+async def get_execution_plan(workspace_id: str):
+    """Get phased execution plan for the workspace."""
+    try:
+        gen = _get_execution_plan_generator(workspace_id)
+        plan = gen.generate(workspace_id)
+        return plan.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate execution plan: {str(e)}")
+
+
+@router.get("/tasks/{task_id}/upstream")
+async def get_task_upstream(task_id: str):
+    """Get all upstream dependencies of a task (tasks this task depends on)."""
+    try:
+        # Search all workspaces for the task
+        for wid in _manager_cache:
+            builder = _get_task_graph_builder(wid)
+            upstream = builder.get_upstream(task_id)
+            if upstream:
+                return {"task_id": task_id, "upstream": [n.model_dump() for n in upstream]}
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get upstream: {str(e)}")
+
+
+@router.get("/tasks/{task_id}/downstream")
+async def get_task_downstream(task_id: str):
+    """Get all downstream dependents of a task (tasks that depend on this task)."""
+    try:
+        # Search all workspaces for the task
+        for wid in _manager_cache:
+            builder = _get_task_graph_builder(wid)
+            downstream = builder.get_downstream(task_id)
+            if downstream:
+                return {"task_id": task_id, "downstream": [n.model_dump() for n in downstream]}
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get downstream: {str(e)}")
 
 
 # =============================================================================
