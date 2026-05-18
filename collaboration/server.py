@@ -38,6 +38,7 @@ from collaboration.events import get_event_bus
 from collaboration.channels import WebSocketChannelAdapter, SSEChannelAdapter, HTTPWebhookChannelAdapter
 from collaboration.events import ChannelRegistry
 from collaboration.rate_limit_middleware import RateLimitMiddleware
+from collaboration.tracing_middleware import OTelTracingMiddleware
 
 _log = logging.getLogger(__name__)
 
@@ -93,6 +94,9 @@ def create_app() -> FastAPI:
 
     # Rate limiting middleware
     app.add_middleware(RateLimitMiddleware)
+
+    # OpenTelemetry tracing middleware
+    app.add_middleware(OTelTracingMiddleware)
     
     # Mount static files for web UI if available
     web_dist = get_web_dist()

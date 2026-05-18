@@ -72,6 +72,13 @@ class CollabConfig:
     RATE_LIMIT_BURST: int = 50
     RATE_LIMIT_WINDOW: int = 60  # seconds
 
+    # === Tracing ===
+    TRACING_ENABLED: bool = True
+    TRACING_SERVICE_NAME: str = "hermes-agent-collab"
+    TRACING_EXPORTER: str = "console"  # "console" | "otlp" | "jaeger"
+    TRACING_OTLP_ENDPOINT: str = "http://localhost:4317"
+    TRACING_SAMPLE_RATE: float = 1.0
+
     def __post_init__(self):
         if self.CHANNEL_ADAPTERS is None:
             self.CHANNEL_ADAPTERS = ["redis_stream", "redis_pubsub", "sse"]
@@ -144,6 +151,17 @@ class CollabConfig:
         window = os.getenv("RATE_LIMIT_WINDOW")
         if window:
             self.RATE_LIMIT_WINDOW = int(window)
+
+        # Tracing
+        tracing_env = os.getenv("TRACING_ENABLED")
+        if tracing_env is not None:
+            self.TRACING_ENABLED = tracing_env.lower() in ("true", "1", "yes")
+        self.TRACING_SERVICE_NAME = os.getenv("TRACING_SERVICE_NAME", self.TRACING_SERVICE_NAME)
+        self.TRACING_EXPORTER = os.getenv("TRACING_EXPORTER", self.TRACING_EXPORTER)
+        self.TRACING_OTLP_ENDPOINT = os.getenv("TRACING_OTLP_ENDPOINT", self.TRACING_OTLP_ENDPOINT)
+        sample = os.getenv("TRACING_SAMPLE_RATE")
+        if sample:
+            self.TRACING_SAMPLE_RATE = float(sample)
 
 
 # Global singleton
