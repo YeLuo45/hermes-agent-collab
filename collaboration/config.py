@@ -86,6 +86,13 @@ class CollabConfig:
     CONFIG_SIGNAL_ENABLED: bool = True
     CONFIG_API_ENABLED: bool = True
 
+    # === Task Result Cache (Direction S) ===
+    TASK_CACHE_ENABLED: bool = True
+    TASK_CACHE_TTL: int = 3600
+    TASK_CACHE_MAX_SIZE: int = 10000
+    TASK_CACHE_STRATEGY: str = "ttl"  # "ttl" | "lru" | "lfu"
+    TASK_CACHE_REDIS_KEY_PREFIX: str = "collab:task_result"
+
     def __post_init__(self):
         if self.CHANNEL_ADAPTERS is None:
             self.CHANNEL_ADAPTERS = ["redis_stream", "redis_pubsub", "sse"]
@@ -184,6 +191,21 @@ class CollabConfig:
         api_env = os.getenv("CONFIG_API_ENABLED")
         if api_env is not None:
             self.CONFIG_API_ENABLED = api_env.lower() in ("true", "1", "yes")
+
+        # Task Result Cache
+        cache_env = os.getenv("TASK_CACHE_ENABLED")
+        if cache_env is not None:
+            self.TASK_CACHE_ENABLED = cache_env.lower() in ("true", "1", "yes")
+        cache_ttl = os.getenv("TASK_CACHE_TTL")
+        if cache_ttl:
+            self.TASK_CACHE_TTL = int(cache_ttl)
+        cache_max = os.getenv("TASK_CACHE_MAX_SIZE")
+        if cache_max:
+            self.TASK_CACHE_MAX_SIZE = int(cache_max)
+        self.TASK_CACHE_STRATEGY = os.getenv("TASK_CACHE_STRATEGY", self.TASK_CACHE_STRATEGY)
+        self.TASK_CACHE_REDIS_KEY_PREFIX = os.getenv(
+            "TASK_CACHE_REDIS_KEY_PREFIX", self.TASK_CACHE_REDIS_KEY_PREFIX
+        )
 
 
 # Global singleton

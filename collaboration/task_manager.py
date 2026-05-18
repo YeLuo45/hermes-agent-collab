@@ -21,7 +21,7 @@ except ImportError:
 class TaskManager:
     """Manages task lifecycle and workflow."""
     
-    def __init__(self, workspace_id: str = None):
+    def __init__(self, workspace_id: str = None, task_cache=None):
         if workspace_id:
             from collaboration.storage import ensure_workspace_files
             ws_path = ensure_workspace_files(workspace_id)
@@ -33,6 +33,7 @@ class TaskManager:
             self.base_path = HERMES_HOME / "collab"
             self.base_path.mkdir(parents=True, exist_ok=True)
             self.store = JsonFileStore.for_tasks(self.base_path)
+        self._task_cache = task_cache
     
     def create_task(
         self,
@@ -146,6 +147,16 @@ class TaskManager:
 
         # Unblock dependent tasks
         self._unblock_dependent_tasks(task_id)
+
+        # Auto-cache task result on completion
+        if self._task_cache is not None and result is not None:
+            try:
+                import asyncio
+                asyncio.create_task(
+                    self._task_cache.set(task_id, result)
+                )
+            except Exception:
+                pass  # Non-blocking cache write
 
         # Plugin hook: task.completed
         emit_hook(HookEvent.TASK_COMPLETED, {

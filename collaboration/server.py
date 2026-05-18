@@ -87,8 +87,26 @@ async def lifespan(app: FastAPI):
     service.setup_reloader(enabled=config.CONFIG_SIGNAL_ENABLED)
     await service.start()
 
+    # Initialize Redis + task cache (Direction S)
+    redis_client = None
+    if config.REDIS_HOST:
+        try:
+            import redis.asyncio as aioredis
+            redis_client = await aioredis.from_url(
+                f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}/{config.REDIS_DB or 0}",
+                password=config.REDIS_PASSWORD,
+                decode_responses=True,
+            )
+            from collaboration.collab_api import init_task_cache
+            init_task_cache(redis_client, config)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Redis connection failed: %s", exc)
+
     yield
 
+    if redis_client:
+        await redis_client.aclose()
     await service.stop()
     bus._stop_consumer()
 

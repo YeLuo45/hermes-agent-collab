@@ -1896,6 +1896,123 @@ async def get_config_diff():
     }
 
 
+# =============================================================================
+# Task Result Cache Endpoints (Direction S)
+# =============================================================================
+
+_cache: "TaskResultCache | None" = None
+
+
+def get_task_cache() -> "TaskResultCache | None":
+    return _cache
+
+
+def init_task_cache(redis_client, config: Any) -> "TaskResultCache":
+    global _cache
+    from collaboration.task_cache import TaskResultCache
+    _cache = TaskResultCache(
+        redis_client=redis_client,
+        default_ttl=getattr(config, "TASK_CACHE_TTL", 3600),
+        max_cache_size=getattr(config, "TASK_CACHE_MAX_SIZE", 10000),
+        strategy=getattr(config, "TASK_CACHE_STRATEGY", "ttl"),
+        redis_key_prefix=getattr(config, "TASK_CACHE_REDIS_KEY_PREFIX", None),
+    )
+    return _cache
+
+
+@router.get("/tasks/{task_id}/result", tags=["tasks"])
+async def get_task_result(task_id: str):
+    """
+    Get task result — cache-first, falls back to TaskManager.
+    Returns cached result if available, otherwise computes from task data.
+    """
+    from collaboration.task_manager import TaskManager
+    from collaboration.collab_api import get_task_manager
+
+    cache = get_task_cache()
+    mgr = get_task_manager()
+
+    if cache:
+        cached = await cache.get(task_id)
+        if cached is not None:
+            return {"source": "cache", "task_id": task_id, "result": cached}
+
+    # Fall back to TaskManager
+    task = mgr.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    if task.result is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} has no result")
+
+    result = task.result
+
+    # Populate cache for next time
+    if cache:
+        await cache.set(task_id, result)
+
+    return {"source": "task_manager", "task_id": task_id, "result": result}
+
+
+@router.post("/tasks/{task_id}/result/cache", tags=["tasks"])
+async def cache_task_result(task_id: str, ttl: int | None = None):
+    """Manually write a task result into the cache."""
+    from collaboration.task_manager import TaskManager
+
+    cache = get_task_cache()
+    if cache is None:
+        raise HTTPException(status_code=503, detail="Task cache not initialized")
+
+    mgr = get_task_manager()
+    task = mgr.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    await cache.set(task_id, task.result or {}, ttl=ttl)
+    return {"status": "cached", "task_id": task_id, "ttl": ttl}
+
+
+@router.delete("/tasks/{task_id}/result/cache", tags=["tasks"])
+async def delete_cached_task_result(task_id: str):
+    """Evict a task result from the cache."""
+    cache = get_task_cache()
+    if cache is None:
+        raise HTTPException(status_code=503, detail="Task cache not initialized")
+
+    await cache.delete(task_id)
+    return {"status": "evicted", "task_id": task_id}
+
+
+@router.post("/workspaces/{workspace_id}/cache/warm", tags=["admin"])
+async def warm_workspace_cache(workspace_id: str):
+    """
+    Pre-populate cache for all completed tasks in a workspace.
+    Returns count of tasks warmed.
+    """
+    from collaboration.task_manager import TaskManager
+
+    cache = get_task_cache()
+    if cache is None:
+        raise HTTPException(status_code=503, detail="Task cache not initialized")
+
+    mgr = get_task_manager()
+    tasks = mgr.list_tasks(workspace_id=workspace_id)
+    completed = [t for t in tasks if t.result is not None]
+
+    task_results = {t.task_id: t.result for t in completed}
+    count = await cache.warm(task_results)
+
+    return {"status": "warmed", "workspace_id": workspace_id, "count": count}
+
+
+@router.get("/cache/stats", tags=["admin"])
+async def get_cache_stats():
+    """Return task cache statistics."""
+    cache = get_task_cache()
+    if cache is None:
+        raise HTTPException(status_code=503, detail="Task cache not initialized")
+    return await cache.stats()
+
+
 # ---- Helpers ----
 
 import json
