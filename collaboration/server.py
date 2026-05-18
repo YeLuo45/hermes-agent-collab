@@ -37,6 +37,7 @@ from collaboration.collab_api import router as collab_router
 from collaboration.events import get_event_bus
 from collaboration.channels import WebSocketChannelAdapter, SSEChannelAdapter, HTTPWebhookChannelAdapter
 from collaboration.events import ChannelRegistry
+from collaboration.rate_limit_middleware import RateLimitMiddleware
 
 _log = logging.getLogger(__name__)
 
@@ -89,6 +90,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Rate limiting middleware
+    app.add_middleware(RateLimitMiddleware)
     
     # Mount static files for web UI if available
     web_dist = get_web_dist()

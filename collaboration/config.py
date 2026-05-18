@@ -63,6 +63,15 @@ class CollabConfig:
     # === Monitoring ===
     METRICS_ENABLED: bool = True
 
+    # === Rate Limiting ===
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_STORAGE: str = "memory"  # "memory" | "redis"
+    RATE_LIMIT_GLOBAL: int = 1000  # req/min
+    RATE_LIMIT_PER_KEY: int = 100  # req/min
+    RATE_LIMIT_PER_ENDPOINT: int = 200  # req/min
+    RATE_LIMIT_BURST: int = 50
+    RATE_LIMIT_WINDOW: int = 60  # seconds
+
     def __post_init__(self):
         if self.CHANNEL_ADAPTERS is None:
             self.CHANNEL_ADAPTERS = ["redis_stream", "redis_pubsub", "sse"]
@@ -114,6 +123,27 @@ class CollabConfig:
         metrics_env = os.getenv("METRICS_ENABLED")
         if metrics_env is not None:
             self.METRICS_ENABLED = metrics_env.lower() in ("true", "1", "yes")
+
+        # Rate Limiting
+        rate_limit_env = os.getenv("RATE_LIMIT_ENABLED")
+        if rate_limit_env is not None:
+            self.RATE_LIMIT_ENABLED = rate_limit_env.lower() in ("true", "1", "yes")
+        self.RATE_LIMIT_STORAGE = os.getenv("RATE_LIMIT_STORAGE", self.RATE_LIMIT_STORAGE)
+        global_limit = os.getenv("RATE_LIMIT_GLOBAL")
+        if global_limit:
+            self.RATE_LIMIT_GLOBAL = int(global_limit)
+        per_key_limit = os.getenv("RATE_LIMIT_PER_KEY")
+        if per_key_limit:
+            self.RATE_LIMIT_PER_KEY = int(per_key_limit)
+        per_endpoint_limit = os.getenv("RATE_LIMIT_PER_ENDPOINT")
+        if per_endpoint_limit:
+            self.RATE_LIMIT_PER_ENDPOINT = int(per_endpoint_limit)
+        burst = os.getenv("RATE_LIMIT_BURST")
+        if burst:
+            self.RATE_LIMIT_BURST = int(burst)
+        window = os.getenv("RATE_LIMIT_WINDOW")
+        if window:
+            self.RATE_LIMIT_WINDOW = int(window)
 
 
 # Global singleton
