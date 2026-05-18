@@ -50,8 +50,16 @@ except ImportError:
         TaskGraphResponse, TopologicalSortResponse, ExecutionPlan,
         UpstreamDownstreamResponse,
     )
-
-_log = logging.getLogger(__name__)
+    from collaboration.secret_store import SecretStore, mask_dict, mask_value
+    from collaboration.redacting_filter import SecretRedactingFilter
+except ImportError:
+    from collaboration.task_graph import TaskGraphBuilder, TopologicalSorter, ExecutionPlanGenerator
+    from collaboration.task_graph import (
+        TaskGraphResponse, TopologicalSortResponse, ExecutionPlan,
+        UpstreamDownstreamResponse,
+    )
+    from collaboration.secret_store import SecretStore, mask_dict, mask_value
+    from collaboration.redacting_filter import SecretRedactingFilter
 
 # Base path for collaboration data
 COLLAB_BASE = Path("~/.hermes/collab").expanduser()
@@ -86,6 +94,19 @@ def _get_workspace_managers(workspace_id: str | None = None):
         }
     
     return _manager_cache[workspace_id]
+
+
+# Global SecretStore instance (lazy init)
+_secret_store: SecretStore | None = None
+
+
+def _get_secret_store() -> SecretStore:
+    """Get or create the global SecretStore."""
+    global _secret_store
+    if _secret_store is None:
+        _secret_store = SecretStore()
+    return _secret_store
+
 
 # WorkspaceManager is stateless (no per-workspace state) so one instance suffices
 workspace_mgr = WorkspaceManager()
@@ -2272,3 +2293,73 @@ def _apply_inline_config(current: Any, values: dict) -> dict:
     result = dict(current)
     result.update(values)
     return result
+
+
+# =============================================================================
+# Secrets / Sensitive Data Endpoints
+# =============================================================================
+
+class SecretStoreRequest(BaseModel):
+    key: str
+    value: str
+
+
+class SecretStoreResponse(BaseModel):
+    ref_id: str
+    key: str
+    message: str = "Secret stored securely"
+
+
+class SecretRetrieveResponse(BaseModel):
+    ref_id: str
+    key: str
+    value: str
+
+
+@router.post("/secrets", response_model=SecretStoreResponse)
+async def store_secret(data: SecretStoreRequest):
+    """Store a sensitive value (encrypted at rest). Returns a ref_id."""
+    store = _get_secret_store()
+    ref_id = store.store(data.key, data.value)
+    return SecretStoreResponse(ref_id=ref_id, key=data.key)
+
+
+@router.get("/secrets/{ref_id}", response_model=SecretRetrieveResponse)
+async def retrieve_secret(ref_id: str):
+    """Retrieve a secret by its ref_id. Requires appropriate permissions."""
+    store = _get_secret_store()
+    value = store.retrieve(ref_id)
+    if value is None:
+        raise HTTPException(status_code=404, detail=f"Secret {ref_id} not found")
+    
+    refs = store.list_refs()
+    key_name = next((r['key_name'] for r in refs if r['ref_id'] == ref_id), 'unknown')
+    return SecretRetrieveResponse(ref_id=ref_id, key=key_name, value=value)
+
+
+@router.delete("/secrets/{ref_id}")
+async def delete_secret(ref_id: str):
+    """Delete a stored secret."""
+    store = _get_secret_store()
+    deleted = store.delete(ref_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Secret {ref_id} not found")
+    return {"message": f"Secret {ref_id} deleted"}
+
+
+@router.post("/secrets/{ref_id}/rotate")
+async def rotate_secret(ref_id: str, body: SecretStoreRequest):
+    """Rotate (re-encrypt) a secret with a new value. Returns new ref_id."""
+    store = _get_secret_store()
+    try:
+        new_ref_id = store.rotate(ref_id, body.value)
+        return {"message": "Secret rotated", "old_ref_id": ref_id, "new_ref_id": new_ref_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/secrets")
+async def list_secrets():
+    """List all secret ref_ids and key names (NOT the values)."""
+    store = _get_secret_store()
+    return {"secrets": store.list_refs()}
