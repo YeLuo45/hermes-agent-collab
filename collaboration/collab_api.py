@@ -54,7 +54,11 @@ try:
     )
     from collaboration.cache_manager import (
         RedisCache, CacheLayer, DictCache,
-        get_redis_cache, get_cache_layer,
+        get_cache_layer,
+    )
+    from collaboration.rate_limit_manager import (
+        RateLimitManager, RateLimitPolicy, QuotaUsage, RateLimitDecision,
+        get_rate_limit_manager,
     )
 except ImportError:
     from collaboration.models import (
@@ -3755,4 +3759,101 @@ async def check_ratelimit(req: RateLimitRequest):
         "remaining": remaining,
         "reset_in": reset_in,
     }
+
+
+# =============================================================================
+# Rate Limit / Quota Management Endpoints
+# =============================================================================
+
+@router.get("/ratelimit/policies")
+async def list_ratelimit_policies():
+    """List all rate limit policies."""
+    mgr = get_rate_limit_manager()
+    policies = mgr.list_policies()
+    return {
+        "policies": [p.to_dict() for p in policies],
+        "total": len(policies),
+    }
+
+
+@router.post("/ratelimit/policies")
+async def create_ratelimit_policy(policy: RateLimitPolicy):
+    """Create a new rate limit policy."""
+    mgr = get_rate_limit_manager()
+    created = mgr.create_policy(policy)
+    return created.to_dict()
+
+
+@router.get("/ratelimit/policies/{policy_id}")
+async def get_ratelimit_policy(policy_id: str):
+    """Get a rate limit policy by ID."""
+    mgr = get_rate_limit_manager()
+    policy = mgr.get_policy(policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return policy.to_dict()
+
+
+@router.put("/ratelimit/policies/{policy_id}")
+async def update_ratelimit_policy(policy_id: str, updates: dict):
+    """Update a rate limit policy."""
+    mgr = get_rate_limit_manager()
+    updated = mgr.update_policy(policy_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return updated.to_dict()
+
+
+@router.delete("/ratelimit/policies/{policy_id}")
+async def delete_ratelimit_policy(policy_id: str):
+    """Delete a rate limit policy."""
+    mgr = get_rate_limit_manager()
+    deleted = mgr.delete_policy(policy_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return {"deleted": True, "policy_id": policy_id}
+
+
+class PolicyAssignRequest(BaseModel):
+    target_type: str
+    target_id: str
+
+
+@router.post("/ratelimit/policies/{policy_id}/assign")
+async def assign_ratelimit_policy(policy_id: str, req: PolicyAssignRequest):
+    """Assign a rate limit policy to a workspace/api_key/agent."""
+    mgr = get_rate_limit_manager()
+    assigned = mgr.assign_policy(req.target_type, req.target_id, policy_id)
+    if not assigned:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return {"assigned": True, "policy_id": policy_id, "target_type": req.target_type, "target_id": req.target_id}
+
+
+@router.get("/ratelimit/usage/{target_type}/{target_id}")
+async def get_quota_usage(target_type: str, target_id: str, policy_id: str = None):
+    """Get quota usage for a workspace/api_key/agent."""
+    mgr = get_rate_limit_manager()
+    usage = mgr.get_usage(target_type, target_id, policy_id)
+    return {"target_type": target_type, "target_id": target_id, "usage": usage}
+
+
+class RateLimitCheckRequest(BaseModel):
+    target_type: str = "global"
+    target_id: str = "default"
+    scope: str = "*"
+
+
+@router.post("/ratelimit/check")
+async def check_ratelimit(req: RateLimitCheckRequest):
+    """Manually trigger a rate limit check (does not consume quota)."""
+    mgr = get_rate_limit_manager()
+    decision = mgr.check_and_consume(req.target_type, req.target_id, req.scope)
+    return decision.to_dict()
+
+
+@router.get("/ratelimit/stats")
+async def get_ratelimit_stats():
+    """Get global rate limit statistics."""
+    mgr = get_rate_limit_manager()
+    return mgr.get_stats()
 
