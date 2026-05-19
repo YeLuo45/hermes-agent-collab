@@ -46,6 +46,9 @@ try:
     from collaboration.playground import (
         PlaygroundManager, Sandbox, Snapshot, REPLResult,
     )
+    from collaboration.knowledge_graph import (
+        KnowledgeGraph, KGNode, KGRelationship, CypherParser,
+    )
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -3348,3 +3351,171 @@ async def list_sandboxes(workspace_id: str | None = None):
     """List all sandboxes, optionally filtered by workspace."""
     manager = _get_playground_manager()
     return {"sandboxes": manager.list_sandboxes(workspace_id=workspace_id)}
+
+
+# =============================================================================
+# Knowledge Graph Endpoints
+# =============================================================================
+
+_kg_manager: KnowledgeGraph | None = None
+
+
+def _get_kg_manager() -> KnowledgeGraph:
+    global _kg_manager
+    if _kg_manager is None:
+        _kg_manager = KnowledgeGraph()
+    return _kg_manager
+
+
+class CreateKGNodeRequest(BaseModel):
+    id: str
+    labels: list[str]
+    properties: dict = {}
+
+
+class UpdateKGNodeRequest(BaseModel):
+    properties: dict
+
+
+class CreateKGRelationshipRequest(BaseModel):
+    id: str
+    type: str
+    source_id: str
+    target_id: str
+    properties: dict = {}
+
+
+class TraverseRequest(BaseModel):
+    start_id: str
+    depth: int = 3
+    direction: str = "both"
+
+
+@router.post("/kg/nodes", status_code=201)
+async def create_kg_node(req: CreateKGNodeRequest):
+    """Create a new knowledge graph node."""
+    kg = _get_kg_manager()
+    node = KGNode(id=req.id, labels=req.labels, properties=req.properties)
+    added = kg.add_node(node)
+    if not added:
+        raise HTTPException(status_code=409, detail="Node with this ID already exists")
+    return {"node_id": req.id, "created": True}
+
+
+@router.get("/kg/nodes/{node_id}")
+async def get_kg_node(node_id: str):
+    """Get a knowledge graph node by ID."""
+    kg = _get_kg_manager()
+    node = kg.get_node(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return node.to_dict()
+
+
+@router.patch("/kg/nodes/{node_id}")
+async def update_kg_node(node_id: str, req: UpdateKGNodeRequest):
+    """Update node properties."""
+    kg = _get_kg_manager()
+    updated = kg.update_node(node_id, req.properties)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"node_id": node_id, "updated": True}
+
+
+@router.delete("/kg/nodes/{node_id}")
+async def delete_kg_node(node_id: str):
+    """Delete a node and all its relationships."""
+    kg = _get_kg_manager()
+    deleted = kg.delete_node(node_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"node_id": node_id, "deleted": True}
+
+
+@router.post("/kg/relationships", status_code=201)
+async def create_kg_relationship(req: CreateKGRelationshipRequest):
+    """Create a new relationship between two nodes."""
+    kg = _get_kg_manager()
+    rel = KGRelationship(
+        id=req.id,
+        type=req.type,
+        source_id=req.source_id,
+        target_id=req.target_id,
+        properties=req.properties,
+    )
+    try:
+        added = kg.add_relationship(rel)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not added:
+        raise HTTPException(status_code=409, detail="Relationship already exists")
+    return {"relationship_id": req.id, "created": True}
+
+
+@router.delete("/kg/relationships/{rel_id}")
+async def delete_kg_relationship(rel_id: str):
+    """Delete a relationship."""
+    kg = _get_kg_manager()
+    deleted = kg.delete_relationship(rel_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    return {"relationship_id": rel_id, "deleted": True}
+
+
+@router.get("/kg/nodes/{node_id}/neighbors")
+async def get_neighbors(
+    node_id: str,
+    rel_type: str | None = None,
+    direction: str = "outgoing",
+):
+    """Get neighboring nodes."""
+    kg = _get_kg_manager()
+    neighbors = kg.get_neighbors(node_id, rel_type=rel_type, direction=direction)
+    return {"neighbors": [n.to_dict() for n in neighbors]}
+
+
+@router.post("/kg/query")
+async def kg_query(cypher: str):
+    """Execute Cypher-like query."""
+    kg = _get_kg_manager()
+    try:
+        results = kg.query(cypher)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"results": results}
+
+
+@router.post("/kg/traverse")
+async def kg_traverse(req: TraverseRequest):
+    """Traverse graph from a start node (BFS)."""
+    kg = _get_kg_manager()
+    results = kg.traverse(req.start_id, depth=req.depth, direction=req.direction)
+    return {"paths": results}
+
+
+@router.get("/kg/export/cytoscape")
+async def kg_export_cytoscape():
+    """Export graph as Cytoscape.js JSON."""
+    kg = _get_kg_manager()
+    return kg.to_cytoscape()
+
+
+@router.get("/kg/export/graphviz")
+async def kg_export_graphviz():
+    """Export graph as Graphviz DOT."""
+    kg = _get_kg_manager()
+    return {"dot": kg.to_graphviz()}
+
+
+@router.get("/kg/export/d3")
+async def kg_export_d3():
+    """Export graph as D3.js force-directed JSON."""
+    kg = _get_kg_manager()
+    return kg.to_d3_json()
+
+
+@router.get("/kg/stats")
+async def kg_stats():
+    """Get knowledge graph statistics."""
+    kg = _get_kg_manager()
+    return kg.stats()
