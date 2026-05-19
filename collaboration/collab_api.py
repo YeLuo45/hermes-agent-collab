@@ -39,6 +39,10 @@ try:
         NotificationManager, NotificationEvent, make_channel,
         ConsoleChannel, SlackChannel, EmailChannel, WebhookChannel,
     )
+    from collaboration.ab_testing import (
+        ExperimentManager, Experiment, Variant, MetricConfig,
+        ExperimentResults, VariantStats, SignificanceResult,
+    )
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -3060,4 +3064,127 @@ async def test_channel(channel_name: str):
     if not sent:
         raise HTTPException(status_code=502, detail="Channel delivery failed")
     return {"delivered": True, "channel": channel_name}
+
+
+# =============================================================================
+# A/B Testing Endpoints
+# =============================================================================
+
+_experiment_manager: ExperimentManager | None = None
+
+
+def _get_experiment_manager() -> ExperimentManager:
+    global _experiment_manager
+    if _experiment_manager is None:
+        _experiment_manager = ExperimentManager()
+    return _experiment_manager
+
+
+class CreateExperimentRequest(BaseModel):
+    name: str
+    description: str = ""
+    variants: list[dict]  # [{"id": "control", "name": "Control", "config": {}, "traffic_weight": 0.5}, ...]
+    metrics: list[dict]    # [{"name": "conversion_rate", "metric_type": "counter", "higher_is_better": true}, ...]
+    traffic_allocation: float = 1.0
+    tags: list[str] = []
+
+
+class RecordMetricRequest(BaseModel):
+    variant_id: str
+    entity_id: str
+    metric_name: str
+    value: float
+
+
+@router.post("/experiments", status_code=201)
+async def create_experiment(req: CreateExperimentRequest):
+    """Create a new A/B experiment."""
+    manager = _get_experiment_manager()
+    try:
+        variants = [Variant(**v) for v in req.variants]
+        metrics = [MetricConfig(**m) for m in req.metrics]
+        exp_id = manager.create_experiment(
+            name=req.name,
+            description=req.description,
+            variants=variants,
+            metrics=metrics,
+            traffic_allocation=req.traffic_allocation,
+            tags=req.tags,
+        )
+        return {"experiment_id": exp_id, "created": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/experiments")
+async def list_experiments(status: str | None = None):
+    """List all A/B experiments, optionally filtered by status."""
+    manager = _get_experiment_manager()
+    return {"experiments": manager.list_experiments(status=status)}
+
+
+@router.get("/experiments/{experiment_id}")
+async def get_experiment(experiment_id: str):
+    """Get detailed information about an experiment."""
+    manager = _get_experiment_manager()
+    summary = manager.get_experiment_summary(experiment_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return summary
+
+
+@router.post("/experiments/{experiment_id}/stop")
+async def stop_experiment(experiment_id: str):
+    """Stop an A/B experiment."""
+    manager = _get_experiment_manager()
+    stopped = manager.stop_experiment(experiment_id)
+    if not stopped:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return {"experiment_id": experiment_id, "stopped": True}
+
+
+@router.delete("/experiments/{experiment_id}")
+async def delete_experiment(experiment_id: str):
+    """Delete an experiment and all its data."""
+    manager = _get_experiment_manager()
+    deleted = manager.delete_experiment(experiment_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return {"experiment_id": experiment_id, "deleted": True}
+
+
+@router.post("/experiments/{experiment_id}/metrics")
+async def record_metric(experiment_id: str, req: RecordMetricRequest):
+    """Record a metric observation for an experiment."""
+    manager = _get_experiment_manager()
+    recorded = manager.record_metric(
+        experiment_id=experiment_id,
+        variant_id=req.variant_id,
+        entity_id=req.entity_id,
+        metric_name=req.metric_name,
+        value=req.value,
+    )
+    if not recorded:
+        raise HTTPException(status_code=400, detail="Invalid experiment_id, variant_id, or metric_name")
+    return {"recorded": True}
+
+
+@router.get("/experiments/{experiment_id}/results")
+async def get_experiment_results(experiment_id: str):
+    """Get statistical results of an A/B experiment."""
+    manager = _get_experiment_manager()
+    results = manager.get_results(experiment_id)
+    if results is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return results.to_dict()
+
+
+@router.get("/experiments/{experiment_id}/assign/{entity_id}")
+async def get_variant_assignment(experiment_id: str, entity_id: str):
+    """Get which variant an entity is assigned to (for client-side routing)."""
+    manager = _get_experiment_manager()
+    variant = manager.get_variant(experiment_id, entity_id)
+    if variant is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return {"experiment_id": experiment_id, "entity_id": entity_id, "variant": variant.to_dict()}
 
