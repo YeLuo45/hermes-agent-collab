@@ -52,6 +52,10 @@ try:
     from collaboration.i18n_manager import (
         I18nManager, LocaleInfo, get_i18n_manager,
     )
+    from collaboration.cache_manager import (
+        RedisCache, CacheLayer, DictCache,
+        get_redis_cache, get_cache_layer,
+    )
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -3647,3 +3651,108 @@ async def import_translations(locale: str, json_str: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"locale": locale, "imported": count}
+
+
+# =============================================================================
+# Cache / Redis Endpoints
+# =============================================================================
+
+class CacheSetRequest(BaseModel):
+    key: str
+    value: str
+    ttl: int | None = None
+
+
+class RateLimitRequest(BaseModel):
+    key: str
+    limit: int = 100
+    window: int = 60
+
+
+def _get_cache_layer() -> CacheLayer:
+    return get_cache_layer()
+
+
+@router.get("/cache/stats")
+async def cache_stats():
+    """Get cache backend statistics."""
+    cache = get_redis_cache()
+    return cache.get_stats()
+
+
+@router.get("/cache/keys")
+async def list_cache_keys(prefix: str = ""):
+    """List cache keys, optionally filtered by prefix."""
+    cache = get_redis_cache()
+    pattern = f"{prefix}*" if prefix else "*"
+    keys = cache.keys(pattern)
+    return {"keys": keys[:100], "count": len(keys), "truncated": len(keys) > 100}
+
+
+@router.get("/cache/get/{key}")
+async def cache_get(key: str):
+    """Get value from cache."""
+    cache = get_redis_cache()
+    value = cache.get(key)
+    if value is None:
+        raise HTTPException(status_code=404, detail=f"Key '{key}' not found")
+    return {"key": key, "value": value, "found": True}
+
+
+@router.post("/cache/set")
+async def cache_set(req: CacheSetRequest):
+    """Set a cache key-value pair."""
+    cache = get_redis_cache()
+    ok = cache.set(req.key, req.value, req.ttl)
+    return {"key": req.key, "set": ok}
+
+
+@router.delete("/cache/del/{key}")
+async def cache_delete(key: str):
+    """Delete a cache key."""
+    cache = get_redis_cache()
+    ok = cache.delete(key)
+    return {"key": key, "deleted": ok}
+
+
+@router.post("/cache/clear")
+async def cache_clear():
+    """Clear all cache entries."""
+    cache = get_redis_cache()
+    cache.clear()
+    return {"cleared": True}
+
+
+@router.post("/cache/lock/{resource}")
+async def acquire_lock(resource: str, timeout: int = 10, lease: int = 30):
+    """Acquire a distributed lock on a resource."""
+    layer = _get_cache_layer()
+    token = layer.acquire_lock(resource, timeout=timeout, lease=lease)
+    if token is None:
+        raise HTTPException(status_code=409, detail=f"Lock on '{resource}' is held")
+    return {"resource": resource, "token": token, "acquired": True}
+
+
+@router.delete("/cache/lock/{resource}")
+async def release_lock(resource: str, token: str):
+    """Release a distributed lock using a token."""
+    layer = _get_cache_layer()
+    ok = layer.release_lock(resource, token)
+    if not ok:
+        raise HTTPException(status_code=403, detail="Invalid lock token")
+    return {"resource": resource, "released": True}
+
+
+@router.post("/cache/ratelimit")
+async def check_ratelimit(req: RateLimitRequest):
+    """Check rate limit for a key. Returns allowed/remaining/reset."""
+    layer = _get_cache_layer()
+    allowed, remaining, reset_in = layer.rate_limit(req.key, req.limit, req.window)
+    return {
+        "key": req.key,
+        "allowed": allowed,
+        "limit": req.limit,
+        "remaining": remaining,
+        "reset_in": reset_in,
+    }
+
