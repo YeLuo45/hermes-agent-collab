@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 try:
@@ -48,6 +48,9 @@ try:
     )
     from collaboration.knowledge_graph import (
         KnowledgeGraph, KGNode, KGRelationship, CypherParser,
+    )
+    from collaboration.i18n_manager import (
+        I18nManager, LocaleInfo, get_i18n_manager,
     )
 except ImportError:
     from collaboration.models import (
@@ -3519,3 +3522,128 @@ async def kg_stats():
     """Get knowledge graph statistics."""
     kg = _get_kg_manager()
     return kg.stats()
+
+
+# =============================================================================
+# i18n / Internationalization Endpoints
+# =============================================================================
+
+class LocaleRequest(BaseModel):
+    code: str
+    name: str
+    native_name: str
+    is_rtl: bool = False
+
+
+class TranslationUpdateRequest(BaseModel):
+    translations: dict[str, str]
+
+
+class TranslateTemplateRequest(BaseModel):
+    template: str
+    locale: str | None = None
+
+
+@router.get("/i18n/locales")
+async def list_locales():
+    """List all available locales."""
+    i18n = get_i18n_manager()
+    return {
+        "locales": [loc.to_dict() for loc in i18n.get_available_locales()],
+        "active_locales": [loc.to_dict() for loc in i18n.get_active_locales()],
+        "current_locale": i18n.get_locale(),
+        "default_locale": i18n.get_default_locale(),
+    }
+
+
+@router.get("/i18n/translations/{locale}")
+async def get_translations(locale: str):
+    """Get all translations for a locale."""
+    i18n = get_i18n_manager()
+    translations = i18n.get_translations_for_locale(locale)
+    untranslated = i18n.get_untranslated_keys(locale)
+    return {
+        "locale": locale,
+        "translations": translations,
+        "count": len(translations),
+        "untranslated_keys": untranslated,
+        "untranslated_count": len(untranslated),
+    }
+
+
+@router.post("/i18n/locales")
+async def register_locale(req: LocaleRequest):
+    """Register a new locale."""
+    i18n = get_i18n_manager()
+    locale = LocaleInfo(
+        code=req.code,
+        name=req.name,
+        native_name=req.native_name,
+        is_rtl=req.is_rtl,
+    )
+    added = i18n.add_locale(locale)
+    if not added:
+        raise HTTPException(status_code=409, detail=f"Locale '{req.code}' already exists")
+    return {"code": req.code, "registered": True}
+
+
+@router.put("/i18n/translations/{locale}")
+async def update_translations(locale: str, req: TranslationUpdateRequest):
+    """Update/add translation keys for a locale."""
+    i18n = get_i18n_manager()
+    i18n.add_translations(locale, req.translations)
+    return {"locale": locale, "updated": True, "count": len(req.translations)}
+
+
+@router.put("/i18n/locales/{locale}")
+async def set_current_locale(locale: str):
+    """Set the current active locale."""
+    i18n = get_i18n_manager()
+    set_ok = i18n.set_locale(locale)
+    if not set_ok:
+        raise HTTPException(status_code=404, detail=f"Locale '{locale}' not found")
+    return {"locale": locale, "current": True}
+
+
+@router.get("/i18n/current")
+async def get_current_locale():
+    """Get current locale info."""
+    i18n = get_i18n_manager()
+    current = i18n.get_locale()
+    locales = i18n.get_available_locales()
+    current_info = next((l for l in locales if l.code == current), None)
+    return {
+        "current_locale": current,
+        "locale_info": current_info.to_dict() if current_info else None,
+    }
+
+
+@router.post("/i18n/translate")
+async def translate_template(req: TranslateTemplateRequest):
+    """Translate a template string with variable interpolation."""
+    i18n = get_i18n_manager()
+    locale = req.locale or i18n.get_locale()
+    result = i18n.t(req.template, **{})
+    return {"template": req.template, "locale": locale, "translation": result}
+
+
+@router.get("/i18n/export/{locale}")
+async def export_locale(locale: str):
+    """Export a locale's translations as JSON."""
+    i18n = get_i18n_manager()
+    try:
+        json_str = i18n.export_locale_json(locale)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Locale '{locale}' not found")
+    return JSONResponse(content=json.loads(json_str))
+
+
+@router.post("/i18n/import/{locale}")
+async def import_translations(locale: str, json_str: str):
+    """Import translations for a locale from JSON string."""
+    i18n = get_i18n_manager()
+    try:
+        count = i18n.import_translations(locale, json_str)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"locale": locale, "imported": count}
