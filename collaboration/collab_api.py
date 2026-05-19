@@ -43,6 +43,9 @@ try:
         ExperimentManager, Experiment, Variant, MetricConfig,
         ExperimentResults, VariantStats, SignificanceResult,
     )
+    from collaboration.playground import (
+        PlaygroundManager, Sandbox, Snapshot, REPLResult,
+    )
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -3188,3 +3191,160 @@ async def get_variant_assignment(experiment_id: str, entity_id: str):
         raise HTTPException(status_code=404, detail="Experiment not found")
     return {"experiment_id": experiment_id, "entity_id": entity_id, "variant": variant.to_dict()}
 
+
+# =============================================================================
+# Playground / REPL Sandbox Endpoints
+# =============================================================================
+
+_playground_manager: PlaygroundManager | None = None
+
+
+def _get_playground_manager() -> PlaygroundManager:
+    global _playground_manager
+    if _playground_manager is None:
+        _playground_manager = PlaygroundManager()
+    return _playground_manager
+
+
+class CreateSandboxRequest(BaseModel):
+    workspace_id: str = "default"
+    ttl_seconds: int = 3600
+    max_steps: int = 1000
+    timeout_seconds: int = 30
+
+
+class ExecuteCodeRequest(BaseModel):
+    code: str
+
+
+class PreviewWorkflowRequest(BaseModel):
+    workflow: dict
+    params: dict = {}
+
+
+class CreateSnapshotRequest(BaseModel):
+    sandbox_id: str
+    name: str = ""
+    description: str = ""
+    created_by: str = ""
+
+
+@router.post("/playground/sandbox", status_code=201)
+async def create_sandbox(req: CreateSandboxRequest):
+    """Create a new playground sandbox environment."""
+    manager = _get_playground_manager()
+    sandbox = manager.create_sandbox(
+        workspace_id=req.workspace_id,
+        ttl_seconds=req.ttl_seconds,
+        max_steps=req.max_steps,
+        timeout_seconds=req.timeout_seconds,
+    )
+    return {"sandbox_id": sandbox.session_id, "created": True}
+
+
+@router.get("/playground/sandbox/{sandbox_id}")
+async def get_sandbox(sandbox_id: str):
+    """Get sandbox status."""
+    manager = _get_playground_manager()
+    sandbox = manager.get_sandbox(sandbox_id)
+    if sandbox is None:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+    from dataclasses import asdict
+    return asdict(sandbox)
+
+
+@router.delete("/playground/sandbox/{sandbox_id}")
+async def delete_sandbox(sandbox_id: str):
+    """Delete a sandbox."""
+    manager = _get_playground_manager()
+    deleted = manager.delete_sandbox(sandbox_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+    return {"deleted": True, "sandbox_id": sandbox_id}
+
+
+@router.post("/playground/sandbox/{sandbox_id}/execute")
+async def execute_code(sandbox_id: str, req: ExecuteCodeRequest):
+    """Execute Python-like code in sandbox."""
+    manager = _get_playground_manager()
+    result = manager.execute(sandbox_id, req.code)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+    return result.to_dict()
+
+
+@router.get("/playground/sandbox/{sandbox_id}/history")
+async def get_sandbox_history(sandbox_id: str):
+    """Get REPL execution history for a sandbox."""
+    manager = _get_playground_manager()
+    history = manager.get_history(sandbox_id)
+    if history is None:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+    return {"history": history}
+
+
+@router.delete("/playground/sandbox/{sandbox_id}/history")
+async def clear_sandbox_history(sandbox_id: str):
+    """Clear REPL history for a sandbox."""
+    manager = _get_playground_manager()
+    cleared = manager.clear_history(sandbox_id)
+    if not cleared:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+    return {"cleared": True, "sandbox_id": sandbox_id}
+
+
+@router.post("/playground/preview")
+async def preview_workflow(req: PreviewWorkflowRequest):
+    """Preview a workflow as DAG with Mermaid rendering."""
+    manager = _get_playground_manager()
+    result = manager.preview_workflow(req.workflow, req.params)
+    return result
+
+
+@router.post("/playground/snapshot", status_code=201)
+async def create_snapshot(req: CreateSnapshotRequest):
+    """Save sandbox state as a shareable snapshot."""
+    manager = _get_playground_manager()
+    snapshot = manager.create_snapshot(
+        sandbox_id=req.sandbox_id,
+        name=req.name,
+        description=req.description,
+        created_by=req.created_by,
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+    return {"snapshot_id": snapshot.id, "created": True}
+
+
+@router.get("/playground/snapshot/{snapshot_id}")
+async def get_snapshot(snapshot_id: str):
+    """Load a snapshot by ID."""
+    manager = _get_playground_manager()
+    snapshot = manager.get_snapshot(snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return snapshot.to_dict()
+
+
+@router.delete("/playground/snapshot/{snapshot_id}")
+async def delete_snapshot(snapshot_id: str):
+    """Delete a snapshot."""
+    manager = _get_playground_manager()
+    deleted = manager.delete_snapshot(snapshot_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return {"deleted": True, "snapshot_id": snapshot_id}
+
+
+@router.get("/playground/snapshots")
+async def list_snapshots(workspace_id: str | None = None):
+    """List all snapshots, optionally filtered by workspace."""
+    manager = _get_playground_manager()
+    return {"snapshots": manager.list_snapshots(workspace_id=workspace_id)}
+
+
+@router.get("/playground/sandboxes")
+async def list_sandboxes(workspace_id: str | None = None):
+    """List all sandboxes, optionally filtered by workspace."""
+    manager = _get_playground_manager()
+    return {"sandboxes": manager.list_sandboxes(workspace_id=workspace_id)}
