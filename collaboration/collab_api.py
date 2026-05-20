@@ -60,6 +60,9 @@ try:
         RateLimitManager, RateLimitPolicy, QuotaUsage, RateLimitDecision,
         get_rate_limit_manager,
     )
+    from collaboration.distributed_tracing import (
+        get_tracing_manager, get_trace_collector,
+    )
 except ImportError:
     from collaboration.models import (
         Agent, AgentStatus, Task, TaskStatus, Priority,
@@ -3856,4 +3859,59 @@ async def get_ratelimit_stats():
     """Get global rate limit statistics."""
     mgr = get_rate_limit_manager()
     return mgr.get_stats()
+
+
+# =============================================================================
+# Trace / Distributed Tracing Endpoints
+# =============================================================================
+
+@router.get("/traces/list")
+async def list_traces(limit: int = 100):
+    """List recent traces."""
+    tm = get_tracing_manager()
+    traces = tm.get_recent_traces(limit=limit)
+    return {"traces": traces, "total": len(traces)}
+
+
+@router.get("/traces/{trace_id}")
+async def get_trace(trace_id: str):
+    """Get all spans for a trace."""
+    tm = get_tracing_manager()
+    spans = tm.get_trace(trace_id)
+    if not spans:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    return {
+        "trace_id": trace_id,
+        "spans": [s.to_dict() for s in spans],
+        "span_count": len(spans),
+    }
+
+
+@router.get("/traces/stats")
+async def get_trace_stats():
+    """Get tracing statistics."""
+    tm = get_tracing_manager()
+    return tm.get_trace_stats()
+
+
+@router.post("/traces/annotate/{span_id}")
+async def annotate_span(span_id: str, trace_id: str, event_name: str, attrs: dict = {}):
+    """Manually add an event annotation to a span."""
+    tm = get_tracing_manager()
+    found = tm.annotate_span(trace_id, span_id, event_name, attrs)
+    if not found:
+        raise HTTPException(status_code=404, detail="Span not found")
+    return {"annotated": True, "span_id": span_id, "event_name": event_name}
+
+
+@router.get("/traces/slow")
+async def get_slow_spans(threshold_ms: float = 1000.0, limit: int = 50):
+    """Get slow spans above threshold."""
+    tm = get_tracing_manager()
+    spans = tm.get_slow_spans(threshold_ms=threshold_ms, limit=limit)
+    return {
+        "slow_spans": [s.to_dict() for s in spans],
+        "threshold_ms": threshold_ms,
+        "count": len(spans),
+    }
 
